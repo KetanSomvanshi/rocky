@@ -57,10 +57,13 @@ Rocky ever isn't running, the hooks are harmless no-ops.
 | Action | How |
 |---|---|
 | Move the window | drag it anywhere (position is remembered) |
-| Collapse / expand | chevron top-right, or right-click menu |
+| Collapse / expand | click anywhere on the header bar (or the ▾ pill) |
 | Jump to a session | click its cat |
 | Launch at login | right-click → Launch at Login |
 | Quit | right-click → Quit Rocky |
+
+The window is a non-activating panel: clicking it never steals keyboard focus
+from your terminal, and clicks register on the first try.
 
 ## Uninstall
 
@@ -71,11 +74,22 @@ Rocky ever isn't running, the hooks are harmless no-ops.
 Stops the agent, deletes `~/.claude/rocky/`, and removes only Rocky's hooks
 from `settings.json`.
 
+## Clicking a cat → the right terminal tab
+
+- **iTerm2 / Terminal.app**: fully scriptable — Rocky selects the exact tab by
+  tty. Works out of the box.
+- **Warp**: Warp has no scripting API and no way to focus an existing tab via
+  URL scheme, so Rocky drives it through the macOS **Accessibility API**: it
+  finds the tab whose title matches the project and presses it. This requires a
+  one-time grant:
+  **System Settings → Privacy & Security → Accessibility → enable Rocky.**
+  The first time you click a cat, macOS prompts for this. Until it's granted
+  (or if Warp doesn't surface the tab in its accessibility tree), clicking just
+  activates Warp. Tab matching is by title, so it's most reliable when each
+  session's tab title contains the project/folder name.
+
 ## Notes / limitations
 
-- **Warp**: clicking a cat activates Warp but can't select the exact tab —
-  Warp has no per-tab AppleScript API. iTerm2 and Terminal.app select the exact
-  tab by tty.
 - Session files are pruned automatically when a session ends, its process dies,
   or it goes stale (>15 min with no events).
 - Logs: `/tmp/rocky.log`.

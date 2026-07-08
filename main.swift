@@ -10,6 +10,7 @@
 // Single file, no dependencies. Build: swiftc -O main.swift -o Rocky
 
 import AppKit
+import ApplicationServices
 import Foundation
 
 // MARK: - Paths & layout constants
@@ -17,12 +18,12 @@ import Foundation
 let sessionsDir = ("~/.claude/rocky/sessions" as NSString).expandingTildeInPath
 
 enum L {
-    static let width: CGFloat = 252
-    static let headerH: CGFloat = 24
-    static let rowH: CGFloat = 48
-    static let catSize: CGFloat = 40
-    static let pad: CGFloat = 8
-    static let corner: CGFloat = 12
+    static let width: CGFloat = 194
+    static let headerH: CGFloat = 21
+    static let rowH: CGFloat = 33
+    static let catSize: CGFloat = 25
+    static let pad: CGFloat = 7
+    static let corner: CGFloat = 10
 }
 
 // MARK: - Session model
@@ -291,6 +292,9 @@ final class PetView: NSView {
     private var tick = 0
     private var rowRects: [(rect: NSRect, session: SessionState)] = []
     private var chevronRect = NSRect.zero
+    private var headerRect = NSRect.zero
+    private var headerHot = false   // hover highlight on the header
+    private var hoverRow = -1
 
     // Drag vs click tracking.
     private var mouseDownScreen = NSPoint.zero
@@ -311,37 +315,54 @@ final class PetView: NSView {
         bg.lineWidth = 1
         bg.stroke()
 
-        // Header.
+        // Header (the whole bar toggles collapse — big, forgiving hit target).
+        headerRect = NSRect(x: 0, y: 0, width: bounds.width, height: L.headerH)
+        if headerHot {
+            NSColor(white: 1, alpha: 0.06).setFill()
+            NSBezierPath(roundedRect: headerRect.insetBy(dx: 2, dy: 2),
+                         xRadius: 6, yRadius: 6).fill()
+        }
         let count = store.sessions.count
-        let title = NSAttributedString(string: "🐾 Rocky · \(count)", attributes: [
-            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: NSColor(white: 0.8, alpha: 1),
+        let title = NSAttributedString(string: "🐾 \(count)", attributes: [
+            .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
+            .foregroundColor: NSColor(white: 0.82, alpha: 1),
         ])
-        title.draw(at: NSPoint(x: L.pad, y: 6))
+        title.draw(at: NSPoint(x: L.pad, y: 4))
+
+        // Chevron as a visibly clickable pill on the right.
+        chevronRect = NSRect(x: bounds.width - 22, y: 2, width: 18, height: L.headerH - 4)
+        NSColor(white: 1, alpha: headerHot ? 0.14 : 0.09).setFill()
+        NSBezierPath(roundedRect: chevronRect, xRadius: 5, yRadius: 5).fill()
         let chev = NSAttributedString(string: collapsed ? "▸" : "▾", attributes: [
-            .font: NSFont.systemFont(ofSize: 12, weight: .bold),
-            .foregroundColor: NSColor(white: 0.7, alpha: 1),
+            .font: NSFont.systemFont(ofSize: 11, weight: .bold),
+            .foregroundColor: NSColor(white: 0.9, alpha: 1),
         ])
-        chevronRect = NSRect(x: bounds.width - 24, y: 4, width: 20, height: L.headerH)
-        chev.draw(at: NSPoint(x: bounds.width - 20, y: 5))
+        let cs = chev.size()
+        chev.draw(at: NSPoint(x: chevronRect.midX - cs.width / 2,
+                              y: chevronRect.midY - cs.height / 2))
 
         // Rows.
         rowRects.removeAll()
         let shown = collapsed ? [store.hot].compactMap { $0 } : store.sessions
         var y = L.headerH
-        for s in shown {
+        for (i, s) in shown.enumerated() {
             let rowRect = NSRect(x: 0, y: y, width: bounds.width, height: L.rowH)
-            drawRow(s, in: rowRect)
+            drawRow(s, in: rowRect, hot: i == hoverRow)
             rowRects.append((rowRect, s))
             y += L.rowH
         }
     }
 
-    private func drawRow(_ s: SessionState, in rect: NSRect) {
+    private func drawRow(_ s: SessionState, in rect: NSRect, hot: Bool) {
+        // Hover highlight for click affordance.
+        if hot {
+            NSColor(white: 1, alpha: 0.06).setFill()
+            NSBezierPath(roundedRect: rect.insetBy(dx: 3, dy: 1.5), xRadius: 6, yRadius: 6).fill()
+        }
         // Alert rows get a red wash + accent bar.
         if s.status == "needs_permission" {
             NSColor(calibratedRed: 0.8, green: 0.25, blue: 0.25, alpha: 0.18).setFill()
-            NSBezierPath(rect: rect.insetBy(dx: 3, dy: 2)).fill()
+            NSBezierPath(roundedRect: rect.insetBy(dx: 3, dy: 1.5), xRadius: 6, yRadius: 6).fill()
             NSColor(calibratedRed: 0.95, green: 0.35, blue: 0.35, alpha: 0.9).setFill()
             NSBezierPath(rect: NSRect(x: 3, y: rect.minY + 4, width: 3, height: rect.height - 8)).fill()
         }
@@ -352,25 +373,27 @@ final class PetView: NSView {
 
         let textX = catRect.maxX + L.pad
         let textW = bounds.width - textX - L.pad
+        let pn = NSMutableParagraphStyle(); pn.lineBreakMode = .byTruncatingTail
         let name = NSAttributedString(string: s.project, attributes: [
-            .font: NSFont.systemFont(ofSize: 12.5, weight: .semibold),
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
             .foregroundColor: NSColor.white,
+            .paragraphStyle: pn,
         ])
-        name.draw(in: NSRect(x: textX, y: rect.minY + 8, width: textW, height: 16))
+        name.draw(in: NSRect(x: textX, y: rect.minY + 4, width: textW, height: 14))
 
         let para = NSMutableParagraphStyle()
         para.lineBreakMode = .byTruncatingTail
         let sub = NSAttributedString(string: s.statusLine, attributes: [
-            .font: NSFont.systemFont(ofSize: 10.5),
-            .foregroundColor: NSColor(white: 0.68, alpha: 1),
+            .font: NSFont.systemFont(ofSize: 9),
+            .foregroundColor: NSColor(white: 0.66, alpha: 1),
             .paragraphStyle: para,
         ])
-        sub.draw(in: NSRect(x: textX, y: rect.minY + 25, width: textW, height: 15))
+        sub.draw(in: NSRect(x: textX, y: rect.minY + 17, width: textW, height: 12))
     }
 
     // MARK: Sizing
 
-    func resizeWindow() {
+    func resizeWindow(animated: Bool = false) {
         let rows = collapsed ? min(store.sessions.count, 1) : store.sessions.count
         let h = L.headerH + CGFloat(max(rows, store.sessions.isEmpty ? 0 : 1)) * L.rowH + L.pad
         guard let win = window else { return }
@@ -383,8 +406,18 @@ final class PetView: NSView {
         let top = f.maxY
         f.size = NSSize(width: L.width, height: h)
         f.origin.y = top - h   // keep top-left pinned as height changes
-        win.setFrame(f, display: true)
+        if f == win.frame { return }
+        if animated {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.16
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                win.animator().setFrame(f, display: true)
+            }
+        } else {
+            win.setFrame(f, display: true)
+        }
         setFrameSize(f.size)
+        window?.invalidateCursorRects(for: self)
     }
 
     // MARK: Timers
@@ -446,9 +479,10 @@ final class PetView: NSView {
             return
         }
         let p = convert(e.locationInWindow, from: nil)
-        if chevronRect.contains(p) {
+        // The entire header bar toggles collapse.
+        if headerRect.contains(p) {
             collapsed.toggle()
-            resizeWindow()
+            resizeWindow(animated: true)
             needsDisplay = true
             return
         }
@@ -460,6 +494,41 @@ final class PetView: NSView {
             needsDisplay = true
             return
         }
+    }
+
+    // MARK: Hover
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways],
+            owner: self, userInfo: nil))
+    }
+
+    override func mouseMoved(with e: NSEvent) {
+        let p = convert(e.locationInWindow, from: nil)
+        let newHeader = headerRect.contains(p)
+        var newRow = -1
+        for (i, entry) in rowRects.enumerated() where entry.rect.contains(p) { newRow = i }
+        if newHeader != headerHot || newRow != hoverRow {
+            headerHot = newHeader
+            hoverRow = newRow
+            needsDisplay = true
+        }
+    }
+
+    override func mouseExited(with e: NSEvent) {
+        if headerHot || hoverRow != -1 {
+            headerHot = false; hoverRow = -1; needsDisplay = true
+        }
+    }
+
+    override func resetCursorRects() {
+        discardCursorRects()
+        addCursorRect(headerRect, cursor: .pointingHand)
+        for entry in rowRects { addCursorRect(entry.rect, cursor: .pointingHand) }
     }
 
     override func rightMouseDown(with e: NSEvent) {
@@ -502,28 +571,118 @@ enum Notify {
 enum Terminal {
     static func focus(_ s: SessionState) {
         guard let app = s.term_app else { return }
-        // Best-effort: activate the app. iTerm2/Terminal additionally try to
-        // select the exact tab by tty. Warp has no per-tab AppleScript API.
-        var script = "tell application \"\(app)\" to activate"
-        if app == "iTerm2", let tty = s.tty {
-            script = """
-            tell application "iTerm2"
-              activate
-              repeat with w in windows
-                repeat with t in tabs of w
-                  repeat with se in sessions of t
-                    if tty of se is \"\(tty)\" then
-                      select w
-                      select t
-                      return
-                    end if
-                  end repeat
-                end repeat
-              end repeat
-            end tell
-            """
+        switch app {
+        case "Warp":
+            focusWarp(project: s.project, cwd: s.cwd ?? "")
+        case "iTerm2":
+            focusITerm(tty: s.tty)
+        default:
+            Notify.run("tell application \"\(app)\" to activate")
         }
-        Notify.run(script)
+    }
+
+    // iTerm2 is fully scriptable — select the exact tab by tty.
+    private static func focusITerm(tty: String?) {
+        guard let tty = tty else {
+            Notify.run("tell application \"iTerm2\" to activate"); return
+        }
+        Notify.run("""
+        tell application "iTerm2"
+          activate
+          repeat with w in windows
+            repeat with t in tabs of w
+              repeat with se in sessions of t
+                if tty of se is "\(tty)" then
+                  select w
+                  select t
+                  return
+                end if
+              end repeat
+            end repeat
+          end repeat
+        end tell
+        """)
+    }
+
+    // Warp has no scripting API, so drive it through the Accessibility API:
+    // find the tab whose title matches the project and press it. Requires the
+    // user to grant Rocky Accessibility permission; otherwise we just activate
+    // Warp (no worse than before).
+    private static func focusWarp(project: String, cwd: String) {
+        let warp = NSRunningApplication
+            .runningApplications(withBundleIdentifier: "dev.warp.Warp-Stable").first
+        func activateOnly() { warp?.activate() }
+
+        guard ensureAXTrusted() else { activateOnly(); return }
+        guard let warp = warp else { return }
+
+        let appEl = AXUIElementCreateApplication(warp.processIdentifier)
+        var best: (score: Int, tab: AXUIElement, window: AXUIElement)?
+
+        for win in axChildren(appEl) where axRole(win) == kAXWindowRole {
+            findTabs(in: win) { tab in
+                let label = [axStr(tab, kAXTitleAttribute),
+                             axStr(tab, kAXDescriptionAttribute),
+                             axStr(tab, kAXValueAttribute)]
+                    .compactMap { $0 }.joined(separator: " ").lowercased()
+                let score = matchScore(label: label, project: project, cwd: cwd)
+                if score > 0, best == nil || score > best!.score {
+                    best = (score, tab, win)
+                }
+            }
+        }
+
+        warp.activate()
+        if let hit = best {
+            AXUIElementPerformAction(hit.window, kAXRaiseAction as CFString)
+            AXUIElementPerformAction(hit.tab, kAXPressAction as CFString)
+        }
+    }
+
+    private static func matchScore(label: String, project: String, cwd: String) -> Int {
+        let p = project.lowercased()
+        if !cwd.isEmpty, label.contains(cwd.lowercased()) { return 3 }
+        if !p.isEmpty, label.contains(p) { return 2 }
+        if label.contains("claude") { return 1 }
+        return 0
+    }
+
+    /// Returns true if we already have (or just can't get) AX trust. Prompts once.
+    private static func ensureAXTrusted() -> Bool {
+        if AXIsProcessTrusted() { return true }
+        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+        _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
+        return false
+    }
+
+    // AX helpers
+    private static func axChildren(_ el: AXUIElement) -> [AXUIElement] {
+        var v: CFTypeRef?
+        AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &v)
+        return (v as? [AXUIElement]) ?? []
+    }
+    private static func axRole(_ el: AXUIElement) -> String {
+        var v: CFTypeRef?
+        AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &v)
+        return (v as? String) ?? ""
+    }
+    private static func axStr(_ el: AXUIElement, _ attr: String) -> String? {
+        var v: CFTypeRef?
+        AXUIElementCopyAttributeValue(el, attr as CFString, &v)
+        return v as? String
+    }
+    /// Depth-first search for tab-like controls (radio buttons / role "tab").
+    private static func findTabs(in el: AXUIElement, depth: Int = 0,
+                                 _ found: (AXUIElement) -> Void) {
+        if depth > 12 { return }
+        for c in axChildren(el) {
+            let role = axRole(c)
+            let rdesc = (axStr(c, kAXRoleDescriptionAttribute) ?? "").lowercased()
+            if role == kAXRadioButtonRole || rdesc.contains("tab") {
+                found(c)
+            }
+            findTabs(in: c, depth: depth + 1, found)
+        }
     }
 }
 
@@ -554,14 +713,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         let start = NSRect(x: 0, y: 0, width: L.width, height: L.headerH + L.rowH + L.pad)
-        window = NSWindow(contentRect: start, styleMask: .borderless,
-                          backing: .buffered, defer: false)
+        // A non-activating panel receives clicks on the first try and never
+        // steals keyboard focus from the terminal — key to fluent interaction.
+        let panel = NSPanel(contentRect: start,
+                            styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+        panel.isFloatingPanel = true
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.hidesOnDeactivate = false
+        window = panel
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
         window.level = .statusBar
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         window.ignoresMouseEvents = false
+        window.acceptsMouseMovedEvents = true
 
         pet = PetView(frame: start)
         window.contentView = pet
