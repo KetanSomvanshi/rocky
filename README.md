@@ -9,12 +9,16 @@ Native Swift/AppKit. Single ~190 KB binary, no dependencies, near-zero CPU when
 idle. macOS only.
 
 <p align="center">
-  <img src="docs/collapsed.png" width="120" alt="Rocky, collapsed — one pet with an alert badge">
-  &nbsp;&nbsp;&nbsp;
-  <img src="docs/expanded.png" width="300" alt="Rocky, expanded — hero pet plus a tab per session">
+  <img src="docs/demo.gif" width="380" alt="Rocky demo: the pet reacts as a session needs permission, then you click it to reveal the session tabs">
 </p>
 
-<p align="center"><em>Click the pet to reveal your sessions. 🔴 needs permission · 🟢 your turn · 🔵 working · ⚪ idle</em></p>
+<p align="center"><em>The pet's mood tracks your sessions. Click it to reveal them — 🔴 needs permission · 🟢 your turn · 🔵 working · ⚪ idle — and click a tab to jump to that terminal.</em></p>
+
+<p align="center">
+  <img src="docs/collapsed.png" width="110" alt="collapsed">
+  &nbsp;&nbsp;&nbsp;
+  <img src="docs/expanded.png" width="300" alt="expanded">
+</p>
 
 ## What it does
 
