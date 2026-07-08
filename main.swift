@@ -182,7 +182,17 @@ final class SessionStore {
                   let r = try? JSONDecoder().decode(RegistryEntry.self, from: d) else { continue }
             if (r.kind ?? "interactive") != "interactive" { continue }
             if !pidAlive(r.pid) { continue }
-            var s: SessionState = hookData[r.sessionId] ?? SessionState(registry: r)
+            // Trust hook data only when it's at least as fresh as the registry.
+            // Otherwise the registry is more current (the session has moved on,
+            // e.g. a permission prompt was answered) — use its live idle/busy
+            // so stale statuses like needs_permission don't linger.
+            let regTs = (r.updatedAt ?? 0) / 1000.0
+            var s: SessionState
+            if let h = hookData[r.sessionId], h.ts >= regTs - 2 {
+                s = h
+            } else {
+                s = SessionState(registry: r)
+            }
             s.title = r.name ?? s.title       // prefer Claude's friendly name
             s.cwd = r.cwd ?? s.cwd
             s.pid = r.pid
