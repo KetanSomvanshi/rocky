@@ -12,19 +12,19 @@ CPU when idle.
 
 ## What it does
 
-- **One cat per session**, stacked in a small always-on-top window, labelled
-  with Claude's own session name (its `ai-title`, e.g. `rocky-desktop-pet`),
-  falling back to the folder name. Each project gets its own fur colour
-  (hashed from its path) so you can tell them apart at a glance.
-- **Moods** driven by live session state:
+- **One hero pet** (a ginger cat named Rocky) sits on your screen and animates
+  with your overall mood — priority order: needs-permission › your-turn ›
+  working › idle. A small badge shows the session count, turning red/green when
+  a session needs you.
+- **Moods**:
   - walking/bobbing tail while Claude is working
-  - happy bounce + "✅ your turn" when a session finishes
-  - red shake + 🔒 accent bar when a session needs permission
-  - curls up asleep with a `z` when idle for a few minutes
-- **Click a cat** to jump to its terminal. That session then drops out of the
-  "needs attention" spot back into the calm stack.
-- **Collapse** (chevron top-right, or right-click → Collapse) to show only the
-  session that currently wants you.
+  - happy bounce when a session finishes ("your turn")
+  - red shake when a session needs permission
+  - curls up asleep with a `z` when everything's idle
+- **Click the pet** to reveal the **session tabs** — one row per running
+  session with a colour-coded status dot (🔴 needs permission · 🟢 your turn ·
+  🔵 working · ⚪ idle), its name, and status. Click a tab to jump straight to
+  that session's terminal tab. Click the pet again to collapse.
 - **Alerts** when a session finishes or needs permission: the cat's row
   pulses with a colored glow (green = done, red = needs permission) and a
   sound plays — all in Rocky itself, no macOS toast/banner. Nothing fires for
@@ -66,9 +66,9 @@ it's running (from the registry); hooks just make its status richer.
 
 | Action | How |
 |---|---|
-| Move the window | drag it anywhere (position is remembered) |
-| Collapse / expand | click anywhere on the header bar (or the ▾ pill) |
-| Jump to a session | click its cat |
+| Move the window | drag the pet anywhere (position is remembered) |
+| Show / hide session tabs | click the pet |
+| Jump to a session | click its tab |
 | Launch at login | right-click → Launch at Login |
 | Quit | right-click → Quit Rocky |
 

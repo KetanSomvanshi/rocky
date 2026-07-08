@@ -20,12 +20,28 @@ let sessionsDir = ("~/.claude/rocky/sessions" as NSString).expandingTildeInPath
 let registryDir = ("~/.claude/sessions" as NSString).expandingTildeInPath
 
 enum L {
-    static let width: CGFloat = 194
-    static let headerH: CGFloat = 21
-    static let rowH: CGFloat = 33
-    static let catSize: CGFloat = 25
-    static let pad: CGFloat = 7
-    static let corner: CGFloat = 10
+    static let width: CGFloat = 216       // expanded window width
+    static let collapsed: CGFloat = 68    // collapsed = compact pet square
+    static let heroH: CGFloat = 58        // hero (pet) header height when expanded
+    static let heroCat: CGFloat = 46      // the one animated hero cat
+    static let tabH: CGFloat = 31         // per-session tab row
+    static let pad: CGFloat = 8
+    static let corner: CGFloat = 13
+}
+
+/// Rocky's signature colour — a consistent ginger cat, so it reads as one
+/// character rather than changing per session.
+let rockyTint = NSColor(calibratedRed: 0.96, green: 0.62, blue: 0.33, alpha: 1)
+
+/// Colour coding for a session's state (status dots, glows).
+func statusColor(_ status: String) -> NSColor {
+    switch status {
+    case "needs_permission": return NSColor(calibratedRed: 0.97, green: 0.40, blue: 0.40, alpha: 1)
+    case "waiting_for_input": return NSColor(calibratedRed: 0.40, green: 0.86, blue: 0.52, alpha: 1)
+    case "running_tool", "processing", "compacting":
+        return NSColor(calibratedRed: 0.40, green: 0.68, blue: 0.98, alpha: 1)
+    default: return NSColor(white: 0.55, alpha: 1)
+    }
 }
 
 // MARK: - Session model
@@ -204,11 +220,16 @@ final class SessionStore {
         return toNotify
     }
 
-    /// The single session shown when collapsed.
-    var hot: SessionState? {
+    /// The session that drives the hero pet's mood — priority order:
+    /// needs-permission › your-turn › most-recently-active.
+    var primary: SessionState? {
         if let perm = sessions.first(where: { $0.status == "needs_permission" }) { return perm }
         if let done = sessions.first(where: { $0.isHot }) { return done }
         return sessions.max { $0.ts < $1.ts }
+    }
+
+    var attentionCount: Int {
+        sessions.filter { $0.status == "needs_permission" || $0.isHot }.count
     }
 
     func markAttended(_ id: String) {
@@ -348,13 +369,16 @@ enum Cat {
 
 final class PetView: NSView {
     let store = SessionStore()
-    var collapsed = false
+    var expanded = false
     private var tick = 0
-    private var rowRects: [(rect: NSRect, session: SessionState)] = []
-    private var chevronRect = NSRect.zero
-    private var headerRect = NSRect.zero
-    private var headerHot = false   // hover highlight on the header
-    private var hoverRow = -1
+
+    // Hit-test rects, rebuilt each draw.
+    private var heroRect = NSRect.zero
+    private var tabRects: [(rect: NSRect, session: SessionState)] = []
+
+    // Hover state.
+    private var heroHot = false
+    private var hoverTab = -1
 
     // Drag vs click tracking.
     private var mouseDownScreen = NSPoint.zero
@@ -364,121 +388,159 @@ final class PetView: NSView {
     // Attention: debounce + per-session flash timer (in-app, no OS toast).
     private var lastNotified: [String: Double] = [:]
     private var flashUntil: [String: Double] = [:]
+    private let flashDuration = 1.4
 
     override var isFlipped: Bool { true }
 
+    // MARK: Draw
+
     override func draw(_ dirty: NSRect) {
-        // Rounded translucent backdrop.
         let bg = NSBezierPath(roundedRect: bounds, xRadius: L.corner, yRadius: L.corner)
-        NSColor(white: 0.11, alpha: 0.9).setFill()
-        bg.fill()
-        NSColor(white: 1, alpha: 0.08).setStroke()
-        bg.lineWidth = 1
-        bg.stroke()
+        NSColor(white: 0.11, alpha: 0.92).setFill(); bg.fill()
+        NSColor(white: 1, alpha: 0.08).setStroke(); bg.lineWidth = 1; bg.stroke()
 
-        // Header (the whole bar toggles collapse — big, forgiving hit target).
-        headerRect = NSRect(x: 0, y: 0, width: bounds.width, height: L.headerH)
-        if headerHot {
-            NSColor(white: 1, alpha: 0.06).setFill()
-            NSBezierPath(roundedRect: headerRect.insetBy(dx: 2, dy: 2),
-                         xRadius: 6, yRadius: 6).fill()
+        tabRects.removeAll()
+        guard let primary = store.primary else { return }
+        if expanded { drawExpanded(primary) } else { drawCollapsed(primary) }
+    }
+
+    /// Collapsed: just the hero pet + a small count/alert badge.
+    private func drawCollapsed(_ primary: SessionState) {
+        heroRect = bounds
+        drawGlow(in: bounds.insetBy(dx: 3, dy: 3), radius: L.corner - 2)
+        let c = NSRect(x: (bounds.width - L.heroCat) / 2,
+                       y: (bounds.height - L.heroCat) / 2,
+                       width: L.heroCat, height: L.heroCat)
+        Cat.draw(in: c, tint: rockyTint, expr: primary.expr, tick: tick)
+        drawBadge(center: NSPoint(x: bounds.width - 11, y: 11))
+    }
+
+    /// Expanded: hero header (pet + summary + collapse chevron), then one
+    /// clickable text tab per session.
+    private func drawExpanded(_ primary: SessionState) {
+        heroRect = NSRect(x: 0, y: 0, width: bounds.width, height: L.heroH)
+        if heroHot {
+            NSColor(white: 1, alpha: 0.05).setFill()
+            NSBezierPath(roundedRect: heroRect.insetBy(dx: 3, dy: 3), xRadius: 8, yRadius: 8).fill()
         }
-        let count = store.sessions.count
-        let title = NSAttributedString(string: "🐾 \(count)", attributes: [
-            .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
-            .foregroundColor: NSColor(white: 0.82, alpha: 1),
-        ])
-        title.draw(at: NSPoint(x: L.pad, y: 4))
+        drawGlow(in: heroRect.insetBy(dx: 3, dy: 3), radius: 8)
 
-        // Chevron as a visibly clickable pill on the right.
-        chevronRect = NSRect(x: bounds.width - 22, y: 2, width: 18, height: L.headerH - 4)
-        NSColor(white: 1, alpha: headerHot ? 0.14 : 0.09).setFill()
-        NSBezierPath(roundedRect: chevronRect, xRadius: 5, yRadius: 5).fill()
-        let chev = NSAttributedString(string: collapsed ? "▸" : "▾", attributes: [
+        let c = NSRect(x: L.pad, y: (L.heroH - L.heroCat) / 2,
+                       width: L.heroCat, height: L.heroCat)
+        Cat.draw(in: c, tint: rockyTint, expr: primary.expr, tick: tick)
+
+        let tx = c.maxX + L.pad
+        let tw = bounds.width - tx - 20
+        let pn = NSMutableParagraphStyle(); pn.lineBreakMode = .byTruncatingTail
+        NSAttributedString(string: primary.displayName, attributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .bold),
+            .foregroundColor: NSColor.white, .paragraphStyle: pn,
+        ]).draw(in: NSRect(x: tx, y: 11, width: tw, height: 16))
+        NSAttributedString(string: primary.statusLine, attributes: [
+            .font: NSFont.systemFont(ofSize: 9.5),
+            .foregroundColor: statusColor(primary.status), .paragraphStyle: pn,
+        ]).draw(in: NSRect(x: tx, y: 28, width: tw, height: 13))
+
+        NSAttributedString(string: "▴", attributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: .bold),
-            .foregroundColor: NSColor(white: 0.9, alpha: 1),
-        ])
-        let cs = chev.size()
-        chev.draw(at: NSPoint(x: chevronRect.midX - cs.width / 2,
-                              y: chevronRect.midY - cs.height / 2))
+            .foregroundColor: NSColor(white: 0.7, alpha: 1),
+        ]).draw(at: NSPoint(x: bounds.width - 17, y: 6))
 
-        // Rows.
-        rowRects.removeAll()
-        let shown = collapsed ? [store.hot].compactMap { $0 } : store.sessions
-        var y = L.headerH
-        for (i, s) in shown.enumerated() {
-            let rowRect = NSRect(x: 0, y: y, width: bounds.width, height: L.rowH)
-            drawRow(s, in: rowRect, hot: i == hoverRow)
-            rowRects.append((rowRect, s))
-            y += L.rowH
+        NSColor(white: 1, alpha: 0.07).setFill()
+        NSBezierPath(rect: NSRect(x: L.pad, y: L.heroH - 0.5,
+                                  width: bounds.width - 2 * L.pad, height: 1)).fill()
+
+        var y = L.heroH
+        for (i, s) in store.sessions.enumerated() {
+            let r = NSRect(x: 0, y: y, width: bounds.width, height: L.tabH)
+            drawTab(s, in: r, hover: i == hoverTab)
+            tabRects.append((r, s))
+            y += L.tabH
         }
     }
 
-    private func drawRow(_ s: SessionState, in rect: NSRect, hot: Bool) {
-        // Attention pulse: a fading, breathing glow for ~1.4s after a
-        // finished / needs-permission transition (the in-app "notification").
+    private func drawTab(_ s: SessionState, in rect: NSRect, hover: Bool) {
         let now = Date().timeIntervalSince1970
         if let until = flashUntil[s.session_id], until > now {
-            let fade = CGFloat((until - now) / flashDuration)          // 1 → 0
+            let fade = CGFloat((until - now) / flashDuration)
             let breathe = 0.55 + 0.45 * abs(sin(Double(tick) * 0.55))
-            let glow = s.status == "needs_permission"
-                ? NSColor(calibratedRed: 0.98, green: 0.38, blue: 0.38, alpha: 1)
-                : NSColor(calibratedRed: 0.40, green: 0.86, blue: 0.52, alpha: 1)
-            glow.withAlphaComponent(fade * 0.55 * CGFloat(breathe)).setFill()
+            statusColor(s.status).withAlphaComponent(fade * 0.4 * CGFloat(breathe)).setFill()
             NSBezierPath(roundedRect: rect.insetBy(dx: 3, dy: 1.5), xRadius: 6, yRadius: 6).fill()
         }
-        // Hover highlight for click affordance.
-        if hot {
+        if hover {
             NSColor(white: 1, alpha: 0.06).setFill()
             NSBezierPath(roundedRect: rect.insetBy(dx: 3, dy: 1.5), xRadius: 6, yRadius: 6).fill()
         }
-        // Alert rows get a red wash + accent bar.
-        if s.status == "needs_permission" {
-            NSColor(calibratedRed: 0.8, green: 0.25, blue: 0.25, alpha: 0.18).setFill()
-            NSBezierPath(roundedRect: rect.insetBy(dx: 3, dy: 1.5), xRadius: 6, yRadius: 6).fill()
-            NSColor(calibratedRed: 0.95, green: 0.35, blue: 0.35, alpha: 0.9).setFill()
-            NSBezierPath(rect: NSRect(x: 3, y: rect.minY + 4, width: 3, height: rect.height - 8)).fill()
-        }
+        let dot = NSRect(x: L.pad + 3, y: rect.midY - 4, width: 8, height: 8)
+        statusColor(s.status).setFill(); NSBezierPath(ovalIn: dot).fill()
 
-        let catRect = NSRect(x: L.pad, y: rect.minY + (rect.height - L.catSize) / 2,
-                             width: L.catSize, height: L.catSize)
-        Cat.draw(in: catRect, tint: Cat.tint(for: s.cwd ?? s.session_id), expr: s.expr, tick: tick)
-
-        let textX = catRect.maxX + L.pad
-        let textW = bounds.width - textX - L.pad
+        let tx = dot.maxX + 8
+        let tw = bounds.width - tx - L.pad
         let pn = NSMutableParagraphStyle(); pn.lineBreakMode = .byTruncatingTail
-        let name = NSAttributedString(string: s.displayName, attributes: [
+        NSAttributedString(string: s.displayName, attributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: NSColor.white,
-            .paragraphStyle: pn,
-        ])
-        name.draw(in: NSRect(x: textX, y: rect.minY + 4, width: textW, height: 14))
-
-        let para = NSMutableParagraphStyle()
-        para.lineBreakMode = .byTruncatingTail
-        let sub = NSAttributedString(string: s.statusLine, attributes: [
+            .foregroundColor: NSColor.white, .paragraphStyle: pn,
+        ]).draw(in: NSRect(x: tx, y: rect.minY + 4, width: tw, height: 14))
+        NSAttributedString(string: s.statusLine, attributes: [
             .font: NSFont.systemFont(ofSize: 9),
-            .foregroundColor: NSColor(white: 0.66, alpha: 1),
-            .paragraphStyle: para,
+            .foregroundColor: NSColor(white: 0.62, alpha: 1), .paragraphStyle: pn,
+        ]).draw(in: NSRect(x: tx, y: rect.minY + 16, width: tw, height: 12))
+    }
+
+    /// Count/alert badge: red when a session needs you, green when one's
+    /// waiting, neutral otherwise. Hidden for a single calm session.
+    private func drawBadge(center: NSPoint) {
+        let perm = store.sessions.contains { $0.status == "needs_permission" }
+        let waiting = store.sessions.contains { $0.isHot }
+        let count = store.sessions.count
+        if count <= 1 && !perm && !waiting { return }
+        let d: CGFloat = 16
+        let r = NSRect(x: center.x - d / 2, y: center.y - d / 2, width: d, height: d)
+        let col = perm ? statusColor("needs_permission")
+                : (waiting ? statusColor("waiting_for_input") : NSColor(white: 0.32, alpha: 0.95))
+        col.setFill(); NSBezierPath(ovalIn: r).fill()
+        let label = NSAttributedString(string: "\(count)", attributes: [
+            .font: NSFont.systemFont(ofSize: 9.5, weight: .bold),
+            .foregroundColor: NSColor.white,
         ])
-        sub.draw(in: NSRect(x: textX, y: rect.minY + 17, width: textW, height: 12))
+        let sz = label.size()
+        label.draw(at: NSPoint(x: r.midX - sz.width / 2, y: r.midY - sz.height / 2))
+    }
+
+    /// Strongest active attention pulse, coloured by that session's state.
+    private func drawGlow(in rect: NSRect, radius: CGFloat) {
+        let now = Date().timeIntervalSince1970
+        var best: (remaining: Double, status: String)?
+        for (id, until) in flashUntil where until > now {
+            let st = store.sessions.first { $0.session_id == id }?.status ?? "waiting_for_input"
+            if best == nil || (until - now) > best!.remaining { best = (until - now, st) }
+        }
+        guard let hit = best else { return }
+        let fade = CGFloat(hit.remaining / flashDuration)
+        let breathe = 0.55 + 0.45 * abs(sin(Double(tick) * 0.55))
+        statusColor(hit.status).withAlphaComponent(fade * 0.5 * CGFloat(breathe)).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
     }
 
     // MARK: Sizing
 
     func resizeWindow(animated: Bool = false) {
-        let rows = collapsed ? min(store.sessions.count, 1) : store.sessions.count
-        let h = L.headerH + CGFloat(max(rows, store.sessions.isEmpty ? 0 : 1)) * L.rowH + L.pad
         guard let win = window else { return }
-        if store.sessions.isEmpty {
-            win.orderOut(nil)
-            return
-        }
+        if store.sessions.isEmpty { win.orderOut(nil); return }
         if !win.isVisible { win.orderFront(nil) }
+        let w: CGFloat = expanded ? L.width : L.collapsed
+        let h: CGFloat = expanded
+            ? L.heroH + CGFloat(store.sessions.count) * L.tabH + L.pad
+            : L.collapsed
         var f = win.frame
-        let top = f.maxY
-        f.size = NSSize(width: L.width, height: h)
-        f.origin.y = top - h   // keep top-left pinned as height changes
+        f.origin.y = f.maxY - h        // pin top edge
+        f.origin.x = f.minX            // pin left edge (grows rightward)
+        f.size = NSSize(width: w, height: h)
+        if let vf = NSScreen.screens.first(where: { $0.frame.intersects(win.frame) })?.visibleFrame
+            ?? NSScreen.main?.visibleFrame {
+            if f.maxX > vf.maxX { f.origin.x = vf.maxX - w }   // keep on-screen
+            if f.minX < vf.minX { f.origin.x = vf.minX }
+        }
         if f == win.frame { return }
         if animated {
             NSAnimationContext.runAnimationGroup { ctx in
@@ -513,18 +575,15 @@ final class PetView: NSView {
         needsDisplay = true
     }
 
-    /// In-app attention only: pulse the session's row and play a sound.
-    /// No macOS banner/toast.
+    /// In-app attention only: pulse + sound. No macOS banner/toast.
     private func alert(_ s: SessionState) {
         let now = Date().timeIntervalSince1970
         if let last = lastNotified[s.session_id], now - last < 8 { return }
         lastNotified[s.session_id] = now
         flashUntil[s.session_id] = now + flashDuration
         NSSound(named: s.status == "needs_permission" ? "Funk" : "Glass")?.play()
-        window?.orderFront(nil)   // make sure the pet is visible, without stealing focus
+        window?.orderFront(nil)
     }
-
-    private let flashDuration = 1.4
 
     // MARK: Mouse
 
@@ -552,18 +611,18 @@ final class PetView: NSView {
             return
         }
         let p = convert(e.locationInWindow, from: nil)
-        // The entire header bar toggles collapse.
-        if headerRect.contains(p) {
-            collapsed.toggle()
+        // Clicking the pet toggles the session tabs.
+        if heroRect.contains(p) {
+            expanded.toggle()
             resizeWindow(animated: true)
             needsDisplay = true
             return
         }
-        for entry in rowRects where entry.rect.contains(p) {
+        // Clicking a tab jumps to that session's terminal.
+        for entry in tabRects where entry.rect.contains(p) {
             store.markAttended(entry.session.session_id)
             Terminal.focus(entry.session)
             _ = store.refresh()
-            resizeWindow()
             needsDisplay = true
             return
         }
@@ -582,32 +641,28 @@ final class PetView: NSView {
 
     override func mouseMoved(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
-        let newHeader = headerRect.contains(p)
-        var newRow = -1
-        for (i, entry) in rowRects.enumerated() where entry.rect.contains(p) { newRow = i }
-        if newHeader != headerHot || newRow != hoverRow {
-            headerHot = newHeader
-            hoverRow = newRow
-            needsDisplay = true
+        let newHero = heroRect.contains(p)
+        var newTab = -1
+        for (i, entry) in tabRects.enumerated() where entry.rect.contains(p) { newTab = i }
+        if newHero != heroHot || newTab != hoverTab {
+            heroHot = newHero; hoverTab = newTab; needsDisplay = true
         }
     }
 
     override func mouseExited(with e: NSEvent) {
-        if headerHot || hoverRow != -1 {
-            headerHot = false; hoverRow = -1; needsDisplay = true
-        }
+        if heroHot || hoverTab != -1 { heroHot = false; hoverTab = -1; needsDisplay = true }
     }
 
     override func resetCursorRects() {
         discardCursorRects()
-        addCursorRect(headerRect, cursor: .pointingHand)
-        for entry in rowRects { addCursorRect(entry.rect, cursor: .pointingHand) }
+        addCursorRect(heroRect, cursor: .pointingHand)
+        for entry in tabRects { addCursorRect(entry.rect, cursor: .pointingHand) }
     }
 
     override func rightMouseDown(with e: NSEvent) {
         let menu = NSMenu()
-        menu.addItem(withTitle: collapsed ? "Expand" : "Collapse",
-                     action: #selector(toggleCollapse), keyEquivalent: "").target = self
+        menu.addItem(withTitle: expanded ? "Collapse" : "Expand",
+                     action: #selector(toggleExpanded), keyEquivalent: "").target = self
         let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "")
         login.target = self
         login.state = LoginItem.isEnabled ? .on : .off
@@ -617,7 +672,7 @@ final class PetView: NSView {
         NSMenu.popUpContextMenu(menu, with: e, for: self)
     }
 
-    @objc private func toggleCollapse() { collapsed.toggle(); resizeWindow(); needsDisplay = true }
+    @objc private func toggleExpanded() { expanded.toggle(); resizeWindow(animated: true); needsDisplay = true }
     @objc private func toggleLogin() { LoginItem.toggle() }
 }
 
@@ -730,7 +785,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var pet: PetView!
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        let start = NSRect(x: 0, y: 0, width: L.width, height: L.headerH + L.rowH + L.pad)
+        let start = NSRect(x: 0, y: 0, width: L.collapsed, height: L.collapsed)
         // A non-activating panel receives clicks on the first try and never
         // steals keyboard focus from the terminal — key to fluent interaction.
         let panel = NSPanel(contentRect: start,
