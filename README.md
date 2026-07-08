@@ -9,15 +9,26 @@ Native Swift/AppKit. Single ~190 KB binary, no dependencies, near-zero CPU when
 idle. macOS only.
 
 <p align="center">
-  <img src="docs/demo.gif" width="380" alt="Rocky demo: the pet reacts as a session needs permission, then you click it to reveal the session tabs">
+  <img src="docs/demo.gif" width="620" alt="Rocky floating over a code editor: the pet reacts as a session needs permission, then expands into session tabs when clicked">
 </p>
 
-<p align="center"><em>The pet's mood tracks your sessions. Click it to reveal them — 🔴 needs permission · 🟢 your turn · 🔵 working · ⚪ idle — and click a tab to jump to that terminal.</em></p>
+<p align="center"><em>Rocky floats on top of whatever you're working in. Its mood tracks your Claude Code sessions — click it to reveal them all and jump to the one that needs you.<br>🔴 needs permission · 🟢 your turn · 🔵 working · ⚪ idle</em></p>
+
+### It sits on top of your work
+
+A single always-on-top widget — no window to manage, no tab to hunt for. Collapsed it's just the pet; click it and the sessions fan out.
 
 <p align="center">
-  <img src="docs/collapsed.png" width="110" alt="collapsed">
-  &nbsp;&nbsp;&nbsp;
-  <img src="docs/expanded.png" width="300" alt="expanded">
+  <img src="docs/float-collapsed.png" width="420" alt="Rocky collapsed — a small pet floating in the corner of a code editor with an alert badge">
+  <img src="docs/float-expanded.png" width="420" alt="Rocky expanded — floating over the editor, showing one tab per session">
+</p>
+
+### The widget, up close
+
+<p align="center">
+  <img src="docs/collapsed.png" width="88" alt="collapsed pet with session-count badge">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/expanded.png" width="300" alt="expanded: hero pet plus a tab per session">
 </p>
 
 ## What it does
