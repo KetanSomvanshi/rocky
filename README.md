@@ -1,14 +1,20 @@
 # 🐾 Rocky
 
-A floating pixel-cat desktop pet for Claude Code. Rocky sits on top of your
-screen and shows one cat per active Claude Code session, animating to match
-what each session is doing — and pings you when one finishes or needs
-permission.
+A floating pixel-cat desktop pet for [Claude Code](https://claude.com/claude-code).
+Rocky sits on top of your screen as a single animated cat whose mood reflects
+what your Claude Code sessions are doing — click it to see every session and
+jump straight to the one that needs you.
 
-Native Swift/AppKit. Single ~180 KB binary, no runtime dependencies, near-zero
-CPU when idle.
+Native Swift/AppKit. Single ~190 KB binary, no dependencies, near-zero CPU when
+idle. macOS only.
 
-![states: working · needs-permission · your-turn · asleep](#)
+<p align="center">
+  <img src="docs/collapsed.png" width="120" alt="Rocky, collapsed — one pet with an alert badge">
+  &nbsp;&nbsp;&nbsp;
+  <img src="docs/expanded.png" width="300" alt="Rocky, expanded — hero pet plus a tab per session">
+</p>
+
+<p align="center"><em>Click the pet to reveal your sessions. 🔴 needs permission · 🟢 your turn · 🔵 working · ⚪ idle</em></p>
 
 ## What it does
 
@@ -30,10 +36,19 @@ CPU when idle.
   sound plays — all in Rocky itself, no macOS toast/banner. Nothing fires for
   routine tool calls.
 
+## Requirements
+
+- **macOS** (Apple Silicon or Intel), macOS 12+.
+- **Xcode Command Line Tools** for `swiftc` (`xcode-select --install`).
+- **Claude Code** installed.
+- Terminal: **Warp**, **iTerm2**, or **Terminal.app** for click-to-focus
+  (other terminals still show sessions; click just activates the app).
+
 ## Install
 
 ```bash
-cd ~/ks/rocky
+git clone https://github.com/KetanSomvanshi/rocky.git
+cd rocky
 ./install.sh
 ```
 
@@ -103,3 +118,20 @@ they only enrich its status (tool names, needs-permission, your-turn alerts).
 ## Notes / limitations
 
 - Logs: `/tmp/rocky.log`.
+- Rocky reads `~/.claude/sessions/` and `~/.claude/rocky/sessions/` locally and
+  never sends anything off your machine.
+
+## How it's built
+
+One `main.swift` (AppKit, no dependencies) plus a small Python hook. Worth a
+read if you're curious how a Claude Code hook can drive a native macOS UI:
+
+- `main.swift` — the pet: transparent non-activating panel, a hand-drawn pixel
+  cat rendered with Core Graphics, and the registry⨯hook merge.
+- `rocky-hook.py` — maps Claude Code hook events to per-session state files.
+- `install.sh` / `uninstall.sh` — build, install the login agent, wire/unwire
+  the hooks in `settings.json` (idempotent; your other hooks are untouched).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
