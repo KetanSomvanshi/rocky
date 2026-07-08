@@ -301,8 +301,9 @@ final class PetView: NSView {
     private var winOriginAtDown = NSPoint.zero
     private var dragged = false
 
-    // Notification debounce.
+    // Attention: debounce + per-session flash timer (in-app, no OS toast).
     private var lastNotified: [String: Double] = [:]
+    private var flashUntil: [String: Double] = [:]
 
     override var isFlipped: Bool { true }
 
@@ -354,6 +355,18 @@ final class PetView: NSView {
     }
 
     private func drawRow(_ s: SessionState, in rect: NSRect, hot: Bool) {
+        // Attention pulse: a fading, breathing glow for ~1.4s after a
+        // finished / needs-permission transition (the in-app "notification").
+        let now = Date().timeIntervalSince1970
+        if let until = flashUntil[s.session_id], until > now {
+            let fade = CGFloat((until - now) / flashDuration)          // 1 → 0
+            let breathe = 0.55 + 0.45 * abs(sin(Double(tick) * 0.55))
+            let glow = s.status == "needs_permission"
+                ? NSColor(calibratedRed: 0.98, green: 0.38, blue: 0.38, alpha: 1)
+                : NSColor(calibratedRed: 0.40, green: 0.86, blue: 0.52, alpha: 1)
+            glow.withAlphaComponent(fade * 0.55 * CGFloat(breathe)).setFill()
+            NSBezierPath(roundedRect: rect.insetBy(dx: 3, dy: 1.5), xRadius: 6, yRadius: 6).fill()
+        }
         // Hover highlight for click affordance.
         if hot {
             NSColor(white: 1, alpha: 0.06).setFill()
@@ -435,23 +448,23 @@ final class PetView: NSView {
 
     private func poll() {
         let notifications = store.refresh()
-        for s in notifications { maybeNotify(s) }
+        for s in notifications { alert(s) }
         resizeWindow()
         needsDisplay = true
     }
 
-    private func maybeNotify(_ s: SessionState) {
+    /// In-app attention only: pulse the session's row and play a sound.
+    /// No macOS banner/toast.
+    private func alert(_ s: SessionState) {
         let now = Date().timeIntervalSince1970
         if let last = lastNotified[s.session_id], now - last < 8 { return }
         lastNotified[s.session_id] = now
-        let (msg, sound): (String, String)
-        if s.status == "needs_permission" {
-            msg = "needs your permission"; sound = "Funk"
-        } else {
-            msg = "is waiting for you"; sound = "Glass"
-        }
-        Notify.send(title: "🐾 \(s.project)", text: "Rocky says: \(s.project) \(msg)", sound: sound)
+        flashUntil[s.session_id] = now + flashDuration
+        NSSound(named: s.status == "needs_permission" ? "Funk" : "Glass")?.play()
+        window?.orderFront(nil)   // make sure the pet is visible, without stealing focus
     }
+
+    private let flashDuration = 1.4
 
     // MARK: Mouse
 
@@ -551,13 +564,8 @@ final class PetView: NSView {
 // MARK: - Notifications & terminal focus (osascript)
 
 enum Notify {
-    static func send(title: String, text: String, sound: String) {
-        let script = "display notification \(q(text)) with title \(q(title)) sound name \(q(sound))"
-        run(script)
-    }
-    private static func q(_ s: String) -> String {
-        "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
-    }
+    /// Runs an AppleScript (used only to activate/raise terminals — not for
+    /// user-facing notifications; Rocky's alerts are in-app + sound).
     static func run(_ script: String) {
         DispatchQueue.global(qos: .utility).async {
             let p = Process()
@@ -733,10 +741,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pet = PetView(frame: start)
         window.contentView = pet
 
-        // Restore saved position, else top-right.
+        // Restore saved position, else top-right — but never off-screen.
         if let saved = UserDefaults.standard.string(forKey: "rocky.origin") {
             window.setFrameOrigin(NSPointFromString(saved))
-        } else if let vf = NSScreen.main?.visibleFrame {
+        }
+        let onScreen = NSScreen.screens.contains { $0.visibleFrame.intersects(window.frame) }
+        if !onScreen, let vf = NSScreen.main?.visibleFrame {
             window.setFrameOrigin(NSPoint(x: vf.maxX - L.width - 20, y: vf.maxY - 220))
         }
 

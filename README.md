@@ -24,8 +24,10 @@ CPU when idle.
   "needs attention" spot back into the calm stack.
 - **Collapse** (chevron top-right, or right-click → Collapse) to show only the
   session that currently wants you.
-- **Notifications** (banner + sound) when a session finishes or needs
-  permission — nothing for routine tool calls.
+- **Alerts** when a session finishes or needs permission: the cat's row
+  pulses with a colored glow (green = done, red = needs permission) and a
+  sound plays — all in Rocky itself, no macOS toast/banner. Nothing fires for
+  routine tool calls.
 
 ## Install
 
