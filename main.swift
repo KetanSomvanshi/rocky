@@ -35,12 +35,14 @@ struct SessionState: Codable {
     var tool: String?
     var detail: String?
     var cwd: String?
+    var transcript: String?
     var pid: Int?
     var tty: String?
     var term_app: String?
     var message: String?
     var ts: Double
     var attended_at: Double?
+    var title: String?   // resolved from the transcript, not from disk
 }
 
 enum Expr { case idle, working, happy, alert, sleeping, compacting }
@@ -49,6 +51,12 @@ extension SessionState {
     var project: String {
         guard let c = cwd, !c.isEmpty else { return "session" }
         return (c as NSString).lastPathComponent
+    }
+
+    /// Human label for the UI: Claude's session title, falling back to folder.
+    var displayName: String {
+        if let t = title, !t.isEmpty { return t }
+        return project
     }
 
     var expr: Expr {
@@ -96,6 +104,7 @@ extension SessionState {
 final class SessionStore {
     private(set) var sessions: [SessionState] = []
     private var lastStatus: [String: String] = [:]
+    private var titleCache: [String: (title: String, at: Double)] = [:]
 
     /// Returns sessions that transitioned into a notify-worthy state this refresh.
     func refresh() -> [SessionState] {
@@ -106,14 +115,17 @@ final class SessionStore {
         for f in files where f.hasSuffix(".json") {
             let path = (sessionsDir as NSString).appendingPathComponent(f)
             guard let data = fm.contents(atPath: path),
-                  let s = try? JSONDecoder().decode(SessionState.self, from: data)
+                  var s = try? JSONDecoder().decode(SessionState.self, from: data)
             else { continue }
-            // Prune dead or long-stale sessions and tidy their files.
-            if !s.alive || now - s.ts > 900 {
+            // Prune only sessions whose process is gone, or that are truly
+            // ancient (24h safety net). Alive-but-idle sessions stay listed.
+            if !s.alive || now - s.ts > 86400 {
                 try? fm.removeItem(atPath: path)
                 lastStatus[s.session_id] = nil
+                titleCache[s.session_id] = nil
                 continue
             }
+            s.title = resolveTitle(s)
             loaded.append(s)
         }
 
@@ -159,6 +171,39 @@ final class SessionStore {
         if let out = try? JSONEncoder().encode(s) {
             try? out.write(to: URL(fileURLWithPath: path))
         }
+    }
+
+    /// Claude Code's session title lives in the transcript as recurring
+    /// `ai-title` records; the last one is the current name. Cached 5s so we
+    /// only touch the file occasionally.
+    private func resolveTitle(_ s: SessionState) -> String? {
+        let now = Date().timeIntervalSince1970
+        if let c = titleCache[s.session_id], now - c.at < 5 { return c.title }
+        let title = Self.lastAITitle(s.transcript) ?? ""
+        titleCache[s.session_id] = (title, now)
+        return title.isEmpty ? nil : title
+    }
+
+    private static func lastAITitle(_ path: String?) -> String? {
+        guard let path = path, !path.isEmpty,
+              let fh = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? fh.close() }
+        // Read only the tail — ai-title records recur, so the latest is here.
+        let size = (try? fh.seekToEnd()) ?? 0
+        let window: UInt64 = 200_000
+        try? fh.seek(toOffset: size > window ? size - window : 0)
+        guard let data = try? fh.readToEnd(),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        var found: String?
+        for line in text.split(separator: "\n") where line.contains("ai-title") {
+            if let d = line.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+               obj["type"] as? String == "ai-title",
+               let t = obj["aiTitle"] as? String, !t.isEmpty {
+                found = t
+            }
+        }
+        return found
     }
 }
 
@@ -387,7 +432,7 @@ final class PetView: NSView {
         let textX = catRect.maxX + L.pad
         let textW = bounds.width - textX - L.pad
         let pn = NSMutableParagraphStyle(); pn.lineBreakMode = .byTruncatingTail
-        let name = NSAttributedString(string: s.project, attributes: [
+        let name = NSAttributedString(string: s.displayName, attributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
             .foregroundColor: NSColor.white,
             .paragraphStyle: pn,

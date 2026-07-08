@@ -12,9 +12,10 @@ CPU when idle.
 
 ## What it does
 
-- **One cat per session**, stacked in a small always-on-top window. Each
-  project gets its own fur colour (hashed from its path) so you can tell them
-  apart at a glance.
+- **One cat per session**, stacked in a small always-on-top window, labelled
+  with Claude's own session name (its `ai-title`, e.g. `rocky-desktop-pet`),
+  falling back to the folder name. Each project gets its own fur colour
+  (hashed from its path) so you can tell them apart at a glance.
 - **Moods** driven by live session state:
   - walking/bobbing tail while Claude is working
   - happy bounce + "✅ your turn" when a session finishes
@@ -90,8 +91,17 @@ from `settings.json`.
   activates Warp. Tab matching is by title, so it's most reliable when each
   session's tab title contains the project/folder name.
 
+## Which sessions show up
+
+A session appears once it has fired at least one hook since Rocky was
+installed. So:
+
+- **New sessions** register automatically.
+- **Sessions already running when you installed Rocky** haven't loaded the
+  hooks yet — run `/hooks` in each (or restart it) once, and it'll appear.
+- Sessions stay listed as long as their process is alive, even when idle.
+  They're removed only when the session ends or its process dies.
+
 ## Notes / limitations
 
-- Session files are pruned automatically when a session ends, its process dies,
-  or it goes stale (>15 min with no events).
 - Logs: `/tmp/rocky.log`.

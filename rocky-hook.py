@@ -178,6 +178,7 @@ def main():
         "tool": tool_name,
         "detail": tool_detail(tool_name, tool_input) if tool_name else "",
         "cwd": data.get("cwd", ""),
+        "transcript": data.get("transcript_path", ""),
         "pid": claude_pid,
         "tty": tty,
         "term_app": term_app,
