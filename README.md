@@ -45,15 +45,22 @@ in an existing one, so the hooks load.
 
 ## How it works
 
+Rocky merges two sources every 0.3s:
+
 ```
-Claude Code hook events (async)
-  → ~/.claude/rocky/rocky-hook.py        writes one JSON file per session
-  → ~/.claude/rocky/sessions/<id>.json
-  → Rocky.app polls that folder (0.3s)   animates the cats + fires notifications
+1. Claude's live session registry  ~/.claude/sessions/<pid>.json
+      → the authoritative list of every running session (name, cwd, status).
+        This is why ALL sessions appear — no hooks required.
+
+2. Rocky's hook data                ~/.claude/rocky/sessions/<id>.json
+      ← rocky-hook.py, fired by Claude Code hook events (async)
+      → adds real-time detail: which tool is running, needs-permission,
+        your-turn, and the finish/permission alerts.
 ```
 
-Hooks run with `"async": true`, so they add zero latency to Claude's turns. If
-Rocky ever isn't running, the hooks are harmless no-ops.
+Hooks run with `"async": true`, so they add zero latency to Claude's turns, and
+if Rocky isn't running they're harmless no-ops. A session shows up the moment
+it's running (from the registry); hooks just make its status richer.
 
 ## Controls
 
@@ -79,28 +86,19 @@ from `settings.json`.
 
 ## Clicking a cat → the right terminal tab
 
+- **Warp**: Rocky opens the session's `WARP_FOCUS_URL`
+  (`warp://session/<uuid>`), which Warp exports in every session's
+  environment — it jumps to the exact tab. No permissions, no config.
 - **iTerm2 / Terminal.app**: fully scriptable — Rocky selects the exact tab by
-  tty. Works out of the box.
-- **Warp**: Warp has no scripting API and no way to focus an existing tab via
-  URL scheme, so Rocky drives it through the macOS **Accessibility API**: it
-  finds the tab whose title matches the project and presses it. This requires a
-  one-time grant:
-  **System Settings → Privacy & Security → Accessibility → enable Rocky.**
-  The first time you click a cat, macOS prompts for this. Until it's granted
-  (or if Warp doesn't surface the tab in its accessibility tree), clicking just
-  activates Warp. Tab matching is by title, so it's most reliable when each
-  session's tab title contains the project/folder name.
+  tty.
 
 ## Which sessions show up
 
-A session appears once it has fired at least one hook since Rocky was
-installed. So:
-
-- **New sessions** register automatically.
-- **Sessions already running when you installed Rocky** haven't loaded the
-  hooks yet — run `/hooks` in each (or restart it) once, and it'll appear.
-- Sessions stay listed as long as their process is alive, even when idle.
-  They're removed only when the session ends or its process dies.
+**Every running Claude Code session appears automatically** — Rocky reads
+Claude's live session registry (`~/.claude/sessions/`), so it doesn't depend on
+hooks firing. Sessions stay listed as long as their process is alive (even when
+idle) and drop off when they exit. Hooks aren't needed for a session to appear;
+they only enrich its status (tool names, needs-permission, your-turn alerts).
 
 ## Notes / limitations
 

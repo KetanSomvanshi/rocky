@@ -10,12 +10,14 @@
 // Single file, no dependencies. Build: swiftc -O main.swift -o Rocky
 
 import AppKit
-import ApplicationServices
 import Foundation
 
 // MARK: - Paths & layout constants
 
+// Rocky's own hook-written state (rich, real-time), and Claude Code's live
+// session registry (authoritative list of every running session).
 let sessionsDir = ("~/.claude/rocky/sessions" as NSString).expandingTildeInPath
+let registryDir = ("~/.claude/sessions" as NSString).expandingTildeInPath
 
 enum L {
     static let width: CGFloat = 194
@@ -99,37 +101,83 @@ extension SessionState {
     }
 }
 
-// MARK: - Session store (polls the sessions dir)
+// MARK: - Claude Code live session registry (~/.claude/sessions/<pid>.json)
+
+struct RegistryEntry: Codable {
+    var pid: Int
+    var sessionId: String
+    var cwd: String?
+    var name: String?       // Claude's own friendly session name
+    var status: String?     // "idle" | "busy"
+    var kind: String?       // "interactive" for real terminal sessions
+    var updatedAt: Double?  // ms since epoch
+}
+
+extension SessionState {
+    /// Minimal state for a registry session that hasn't fired a hook yet.
+    init(registry r: RegistryEntry) {
+        session_id = r.sessionId
+        status = (r.status == "busy") ? "processing" : "idle"
+        event = nil; tool = nil; detail = nil
+        cwd = r.cwd
+        transcript = nil
+        pid = r.pid
+        tty = nil; term_app = nil; message = nil
+        ts = (r.updatedAt ?? 0) / 1000.0
+        attended_at = nil
+        title = r.name
+    }
+}
+
+func pidAlive(_ pid: Int) -> Bool {
+    guard pid > 0 else { return false }
+    return kill(pid_t(pid), 0) == 0 || errno == EPERM
+}
+
+// MARK: - Session store
 
 final class SessionStore {
     private(set) var sessions: [SessionState] = []
     private var lastStatus: [String: String] = [:]
-    private var titleCache: [String: (title: String, at: Double)] = [:]
 
-    /// Returns sessions that transitioned into a notify-worthy state this refresh.
+    /// Merge Claude's live registry (authoritative list of running sessions)
+    /// with Rocky's hook data (rich real-time status). The registry guarantees
+    /// every session shows up even before it fires a hook. Returns sessions
+    /// that just transitioned into a notify-worthy state.
     func refresh() -> [SessionState] {
         let fm = FileManager.default
-        var loaded: [SessionState] = []
-        let files = (try? fm.contentsOfDirectory(atPath: sessionsDir)) ?? []
-        let now = Date().timeIntervalSince1970
-        for f in files where f.hasSuffix(".json") {
-            let path = (sessionsDir as NSString).appendingPathComponent(f)
-            guard let data = fm.contents(atPath: path),
-                  var s = try? JSONDecoder().decode(SessionState.self, from: data)
-            else { continue }
-            // Prune only sessions whose process is gone, or that are truly
-            // ancient (24h safety net). Alive-but-idle sessions stay listed.
-            if !s.alive || now - s.ts > 86400 {
-                try? fm.removeItem(atPath: path)
-                lastStatus[s.session_id] = nil
-                titleCache[s.session_id] = nil
-                continue
-            }
-            s.title = resolveTitle(s)
-            loaded.append(s)
+
+        // 1. Hook data indexed by sessionId (tools, permission, your-turn…).
+        var hookData: [String: SessionState] = [:]
+        for f in (try? fm.contentsOfDirectory(atPath: sessionsDir)) ?? [] where f.hasSuffix(".json") {
+            let p = (sessionsDir as NSString).appendingPathComponent(f)
+            guard let d = fm.contents(atPath: p),
+                  let s = try? JSONDecoder().decode(SessionState.self, from: d) else { continue }
+            if !s.alive { try? fm.removeItem(atPath: p); continue }   // tidy dead
+            hookData[s.session_id] = s
         }
 
-        // Detect transitions worth a banner.
+        // 2. Registry = every live interactive session (hooks not required).
+        var loaded: [SessionState] = []
+        var seen = Set<String>()
+        for f in (try? fm.contentsOfDirectory(atPath: registryDir)) ?? [] where f.hasSuffix(".json") {
+            let p = (registryDir as NSString).appendingPathComponent(f)
+            guard let d = fm.contents(atPath: p),
+                  let r = try? JSONDecoder().decode(RegistryEntry.self, from: d) else { continue }
+            if (r.kind ?? "interactive") != "interactive" { continue }
+            if !pidAlive(r.pid) { continue }
+            var s: SessionState = hookData[r.sessionId] ?? SessionState(registry: r)
+            s.title = r.name ?? s.title       // prefer Claude's friendly name
+            s.cwd = r.cwd ?? s.cwd
+            s.pid = r.pid
+            loaded.append(s)
+            seen.insert(r.sessionId)
+        }
+
+        // 3. Safety net: alive hook sessions missing from the registry.
+        for (id, s) in hookData where !seen.contains(id) { loaded.append(s) }
+
+        // Detect transitions worth an alert.
         var toNotify: [SessionState] = []
         for s in loaded {
             let prev = lastStatus[s.session_id]
@@ -171,39 +219,6 @@ final class SessionStore {
         if let out = try? JSONEncoder().encode(s) {
             try? out.write(to: URL(fileURLWithPath: path))
         }
-    }
-
-    /// Claude Code's session title lives in the transcript as recurring
-    /// `ai-title` records; the last one is the current name. Cached 5s so we
-    /// only touch the file occasionally.
-    private func resolveTitle(_ s: SessionState) -> String? {
-        let now = Date().timeIntervalSince1970
-        if let c = titleCache[s.session_id], now - c.at < 5 { return c.title }
-        let title = Self.lastAITitle(s.transcript) ?? ""
-        titleCache[s.session_id] = (title, now)
-        return title.isEmpty ? nil : title
-    }
-
-    private static func lastAITitle(_ path: String?) -> String? {
-        guard let path = path, !path.isEmpty,
-              let fh = FileHandle(forReadingAtPath: path) else { return nil }
-        defer { try? fh.close() }
-        // Read only the tail — ai-title records recur, so the latest is here.
-        let size = (try? fh.seekToEnd()) ?? 0
-        let window: UInt64 = 200_000
-        try? fh.seek(toOffset: size > window ? size - window : 0)
-        guard let data = try? fh.readToEnd(),
-              let text = String(data: data, encoding: .utf8) else { return nil }
-        var found: String?
-        for line in text.split(separator: "\n") where line.contains("ai-title") {
-            if let d = line.data(using: .utf8),
-               let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-               obj["type"] as? String == "ai-title",
-               let t = obj["aiTitle"] as? String, !t.isEmpty {
-                found = t
-            }
-        }
-        return found
     }
 }
 
@@ -623,15 +638,46 @@ enum Notify {
 
 enum Terminal {
     static func focus(_ s: SessionState) {
-        guard let app = s.term_app else { return }
-        switch app {
-        case "Warp":
-            focusWarp(project: s.project, cwd: s.cwd ?? "")
-        case "iTerm2":
-            focusITerm(tty: s.tty)
-        default:
-            Notify.run("tell application \"\(app)\" to activate")
+        // Warp exports WARP_FOCUS_URL (warp://session/<uuid>) in each session's
+        // environment — opening it focuses that exact tab. Read it live from
+        // the Claude process's env; works for every session, no permissions.
+        if let pid = s.pid, let url = warpFocusURL(pid: pid) {
+            openURL(url)
+            return
         }
+        // Non-Warp terminals.
+        if s.term_app == "iTerm2" { focusITerm(tty: s.tty); return }
+        if let app = s.term_app { Notify.run("tell application \"\(app)\" to activate") }
+    }
+
+    /// Read WARP_FOCUS_URL from a running process's environment via `ps eww`.
+    private static func warpFocusURL(pid: Int) -> String? {
+        let out = capture("/bin/ps", ["eww", "-p", "\(pid)"])
+        for tok in out.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }) {
+            if tok.hasPrefix("WARP_FOCUS_URL=") {
+                let url = String(tok.dropFirst("WARP_FOCUS_URL=".count))
+                return url.isEmpty ? nil : url
+            }
+        }
+        return nil
+    }
+
+    private static func openURL(_ url: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let p = Process()
+            p.launchPath = "/usr/bin/open"
+            p.arguments = [url]
+            try? p.run()
+        }
+    }
+
+    private static func capture(_ path: String, _ args: [String]) -> String {
+        let p = Process(); p.launchPath = path; p.arguments = args
+        let pipe = Pipe(); p.standardOutput = pipe
+        do { try p.run() } catch { return "" }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
     // iTerm2 is fully scriptable — select the exact tab by tty.
@@ -655,87 +701,6 @@ enum Terminal {
           end repeat
         end tell
         """)
-    }
-
-    // Warp has no scripting API, so drive it through the Accessibility API:
-    // find the tab whose title matches the project and press it. Requires the
-    // user to grant Rocky Accessibility permission; otherwise we just activate
-    // Warp (no worse than before).
-    private static func focusWarp(project: String, cwd: String) {
-        let warp = NSRunningApplication
-            .runningApplications(withBundleIdentifier: "dev.warp.Warp-Stable").first
-        func activateOnly() { warp?.activate() }
-
-        guard ensureAXTrusted() else { activateOnly(); return }
-        guard let warp = warp else { return }
-
-        let appEl = AXUIElementCreateApplication(warp.processIdentifier)
-        var best: (score: Int, tab: AXUIElement, window: AXUIElement)?
-
-        for win in axChildren(appEl) where axRole(win) == kAXWindowRole {
-            findTabs(in: win) { tab in
-                let label = [axStr(tab, kAXTitleAttribute),
-                             axStr(tab, kAXDescriptionAttribute),
-                             axStr(tab, kAXValueAttribute)]
-                    .compactMap { $0 }.joined(separator: " ").lowercased()
-                let score = matchScore(label: label, project: project, cwd: cwd)
-                if score > 0, best == nil || score > best!.score {
-                    best = (score, tab, win)
-                }
-            }
-        }
-
-        warp.activate()
-        if let hit = best {
-            AXUIElementPerformAction(hit.window, kAXRaiseAction as CFString)
-            AXUIElementPerformAction(hit.tab, kAXPressAction as CFString)
-        }
-    }
-
-    private static func matchScore(label: String, project: String, cwd: String) -> Int {
-        let p = project.lowercased()
-        if !cwd.isEmpty, label.contains(cwd.lowercased()) { return 3 }
-        if !p.isEmpty, label.contains(p) { return 2 }
-        if label.contains("claude") { return 1 }
-        return 0
-    }
-
-    /// Returns true if we already have (or just can't get) AX trust. Prompts once.
-    private static func ensureAXTrusted() -> Bool {
-        if AXIsProcessTrusted() { return true }
-        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
-        _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
-        return false
-    }
-
-    // AX helpers
-    private static func axChildren(_ el: AXUIElement) -> [AXUIElement] {
-        var v: CFTypeRef?
-        AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &v)
-        return (v as? [AXUIElement]) ?? []
-    }
-    private static func axRole(_ el: AXUIElement) -> String {
-        var v: CFTypeRef?
-        AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &v)
-        return (v as? String) ?? ""
-    }
-    private static func axStr(_ el: AXUIElement, _ attr: String) -> String? {
-        var v: CFTypeRef?
-        AXUIElementCopyAttributeValue(el, attr as CFString, &v)
-        return v as? String
-    }
-    /// Depth-first search for tab-like controls (radio buttons / role "tab").
-    private static func findTabs(in el: AXUIElement, depth: Int = 0,
-                                 _ found: (AXUIElement) -> Void) {
-        if depth > 12 { return }
-        for c in axChildren(el) {
-            let role = axRole(c)
-            let rdesc = (axStr(c, kAXRoleDescriptionAttribute) ?? "").lowercased()
-            if role == kAXRadioButtonRole || rdesc.contains("tab") {
-                found(c)
-            }
-            findTabs(in: c, depth: depth + 1, found)
-        }
     }
 }
 
