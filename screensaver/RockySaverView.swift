@@ -158,14 +158,48 @@ final class RockySaverView: ScreenSaverView {
     }
 
     private func drawRow(_ s: SessionState, x: CGFloat, y: CGFloat, width: CGFloat, scale: CGFloat) {
+        let sc = statusColor(s.status)
         let dotD = 11 * scale
-        statusColor(s.status).setFill()
+        sc.setFill()
         NSBezierPath(ovalIn: NSRect(x: x, y: y + 8 * scale, width: dotD, height: dotD)).fill()
+
+        var right = x + width
+        let buckets = s.activityBuckets()
+        if buckets.contains(where: { $0 > 0 }) {
+            let sw = 46 * scale, sh = 18 * scale
+            let sr = NSRect(x: x + width - sw, y: y + 6 * scale, width: sw, height: sh)
+            drawSparkline(buckets, in: sr, color: sc)
+            right = sr.minX - 10 * scale
+        }
+
         let tx = x + dotD + 12 * scale
-        let tw = width - (tx - x)
-        text(s.displayName, x: tx, y: y, width: tw, size: 16 * scale, weight: .semibold, color: .white)
-        text(s.statusLine, x: tx, y: y + 20 * scale, width: tw, size: 13 * scale, weight: .regular,
-             color: statusColor(s.status).blended(withFraction: 0.35, of: .white) ?? .gray)
+        var nameW = right - tx
+        if s.waitingSeconds > 0 {
+            let chip = NSAttributedString(string: s.elapsedLabel(), attributes: [
+                .font: NSFont.systemFont(ofSize: 13 * scale, weight: .semibold), .foregroundColor: sc])
+            let cw = chip.size().width
+            chip.draw(at: NSPoint(x: right - cw, y: y + 1 * scale))
+            nameW -= cw + 8 * scale
+        }
+        text(s.displayName, x: tx, y: y, width: nameW, size: 16 * scale, weight: .semibold, color: .white)
+
+        let attention = s.status == "needs_permission" || s.isHot
+        let line2 = attention ? (s.story ?? s.statusLine) : s.statusLine
+        text(line2, x: tx, y: y + 20 * scale, width: right - tx, size: 13 * scale, weight: .regular,
+             color: sc.blended(withFraction: 0.35, of: .white) ?? .gray)
+    }
+
+    /// Tiny bar sparkline of recent activity (newest on the right).
+    private func drawSparkline(_ buckets: [Int], in rect: NSRect, color: NSColor) {
+        let maxV = CGFloat(max(1, buckets.max() ?? 1))
+        let bw = rect.width / CGFloat(buckets.count)
+        for (i, v) in buckets.enumerated() {
+            let h = v == 0 ? 2 : max(3, rect.height * CGFloat(v) / maxV)
+            let bar = NSRect(x: rect.minX + CGFloat(i) * bw, y: rect.maxY - h,
+                             width: max(1.5, bw - 1.5), height: h)
+            color.withAlphaComponent(v > 0 ? 0.85 : 0.22).setFill()
+            NSBezierPath(rect: bar).fill()
+        }
     }
 
     private func timeString() -> String {

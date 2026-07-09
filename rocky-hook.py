@@ -103,6 +103,42 @@ def tool_detail(tool_name, tool_input):
     return ""
 
 
+def transcript_summary(path, max_len=90):
+    """The last assistant text from the JSONL transcript — a short, human
+    'what this session is doing/saying' peek. Best-effort; empty on any trouble."""
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 65536))          # last 64 KB is plenty
+            tail = f.read().decode("utf-8", "ignore")
+    except OSError:
+        return ""
+    for line in reversed(tail.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if obj.get("type") != "assistant":
+            continue
+        content = obj.get("message", {}).get("content", [])
+        texts = []
+        if isinstance(content, list):
+            texts = [b.get("text", "") for b in content
+                     if isinstance(b, dict) and b.get("type") == "text"]
+        elif isinstance(content, str):
+            texts = [content]
+        text = " ".join(" ".join(texts).split())   # collapse whitespace
+        if text:
+            return text[:max_len]
+    return ""
+
+
 def main():
     try:
         data = json.load(sys.stdin)
@@ -157,12 +193,14 @@ def main():
     term_app = None
     tty = None
     prev_attended = 0
+    prev_recent = []
     try:
         with open(session_path) as f:
             prev = json.load(f)
         term_app = prev.get("term_app")
         tty = prev.get("tty")
         prev_attended = prev.get("attended_at", 0)
+        prev_recent = prev.get("recent", []) or []
     except (OSError, json.JSONDecodeError, ValueError):
         pass
 
@@ -171,22 +209,31 @@ def main():
     if not tty:
         tty = get_tty(claude_pid)
 
+    now = time.time()
+    # Rolling activity trace for the sparkline: recent event times, windowed to
+    # the last 5 minutes and capped so the file stays small.
+    recent = [t for t in prev_recent if isinstance(t, (int, float)) and now - t < 300]
+    recent.append(now)
+    recent = recent[-40:]
+
     state = {
         "session_id": session_id,
         "status": status,
         "event": event,
         "tool": tool_name,
         "detail": tool_detail(tool_name, tool_input) if tool_name else "",
+        "summary": transcript_summary(data.get("transcript_path", "")),
+        "recent": recent,
         "cwd": data.get("cwd", ""),
         "transcript": data.get("transcript_path", ""),
         "pid": claude_pid,
         "tty": tty,
         "term_app": term_app,
         "message": data.get("message", ""),
-        "ts": time.time(),
+        "ts": now,
         # When the user submits a new prompt, they've clearly attended to this
         # session, so clear any prior "hot" mark by re-stamping attention.
-        "attended_at": time.time() if event == "UserPromptSubmit" else prev_attended,
+        "attended_at": now if event == "UserPromptSubmit" else prev_attended,
     }
 
     atomic_write(session_path, state)

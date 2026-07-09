@@ -26,7 +26,9 @@ enum L {
 
 final class PetView: NSView {
     let store = SessionStore()
-    var expanded = false { didSet { if expanded && !oldValue { expandStart = tick } } }
+    var expanded = ProcessInfo.processInfo.environment["ROCKY_EXPAND"] == "1" {
+        didSet { if expanded && !oldValue { expandStart = tick } }
+    }
     private var tick = 0
 
     // Hit-test rects, rebuilt each draw.
@@ -97,10 +99,7 @@ final class PetView: NSView {
         guard let primary = store.primary else { return }
 
         // All-clear: everything just went calm after being busy → celebrate.
-        let active = store.sessions.contains {
-            $0.status == "running_tool" || $0.status == "processing"
-                || $0.status == "needs_permission" || $0.isHot
-        }
+        let active = store.sessions.contains(where: isActive)
         if wasActive && !active { celebrateStart = tick }
         wasActive = active
 
@@ -197,10 +196,16 @@ final class PetView: NSView {
 
     private func drawTab(_ s: SessionState, in rect: NSRect, hover: Bool) {
         let now = Date().timeIntervalSince1970
+        let sc = statusColor(s.status)
         if let until = flashUntil[s.session_id], until > now {
             let fade = CGFloat((until - now) / flashDuration)
             let breathe = 0.55 + 0.45 * abs(sin(Double(tick) * 0.55))
-            statusColor(s.status).withAlphaComponent(fade * 0.4 * CGFloat(breathe)).setFill()
+            sc.withAlphaComponent(fade * 0.4 * CGFloat(breathe)).setFill()
+            NSBezierPath(roundedRect: rect.insetBy(dx: 3, dy: 1.5), xRadius: 6, yRadius: 6).fill()
+        } else if s.waitingSeconds > 120 {
+            // Stuck: a persistent gentle pulse until it's attended to.
+            let breathe = 0.4 + 0.35 * abs(sin(Double(tick) * 0.3))
+            sc.withAlphaComponent(0.16 * CGFloat(breathe)).setFill()
             NSBezierPath(roundedRect: rect.insetBy(dx: 3, dy: 1.5), xRadius: 6, yRadius: 6).fill()
         }
         if hover {
@@ -208,19 +213,54 @@ final class PetView: NSView {
             NSBezierPath(roundedRect: rect.insetBy(dx: 3, dy: 1.5), xRadius: 6, yRadius: 6).fill()
         }
         let dot = NSRect(x: L.pad + 3, y: rect.midY - 4, width: 8, height: 8)
-        statusColor(s.status).setFill(); NSBezierPath(ovalIn: dot).fill()
+        sc.setFill(); NSBezierPath(ovalIn: dot).fill()
+
+        var rightEdge = bounds.width - L.pad
+        // Activity sparkline (right) when there's recent tool activity.
+        let buckets = s.activityBuckets()
+        if buckets.contains(where: { $0 > 0 }) {
+            let sw: CGFloat = 30, sh: CGFloat = 13
+            let sr = NSRect(x: rightEdge - sw, y: rect.midY - sh / 2, width: sw, height: sh)
+            drawSparkline(buckets, in: sr, color: sc)
+            rightEdge = sr.minX - 6
+        }
 
         let tx = dot.maxX + 8
-        let tw = bounds.width - tx - L.pad
         let pn = NSMutableParagraphStyle(); pn.lineBreakMode = .byTruncatingTail
+        // Elapsed chip (top-right) while a session waits on you.
+        var nameW = rightEdge - tx
+        if s.waitingSeconds > 0 {
+            let chip = NSAttributedString(string: s.elapsedLabel(now), attributes: [
+                .font: NSFont.systemFont(ofSize: 9, weight: .semibold), .foregroundColor: sc])
+            let cw = chip.size().width
+            chip.draw(at: NSPoint(x: rightEdge - cw, y: rect.minY + 5))
+            nameW -= cw + 6
+        }
         NSAttributedString(string: s.displayName, attributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
             .foregroundColor: NSColor.white, .paragraphStyle: pn,
-        ]).draw(in: NSRect(x: tx, y: rect.minY + 4, width: tw, height: 14))
-        NSAttributedString(string: s.statusLine, attributes: [
+        ]).draw(in: NSRect(x: tx, y: rect.minY + 4, width: nameW, height: 14))
+        // Second line: when a session wants you, show the transcript "story"
+        // (what it's asking); otherwise the tool/status line.
+        let attention = s.status == "needs_permission" || s.isHot
+        let line2 = (attention ? (s.story ?? s.statusLine) : s.statusLine)
+        NSAttributedString(string: line2, attributes: [
             .font: NSFont.systemFont(ofSize: 9),
             .foregroundColor: NSColor(white: 0.62, alpha: 1), .paragraphStyle: pn,
-        ]).draw(in: NSRect(x: tx, y: rect.minY + 16, width: tw, height: 12))
+        ]).draw(in: NSRect(x: tx, y: rect.minY + 16, width: rightEdge - tx, height: 12))
+    }
+
+    /// Tiny bar sparkline of recent activity (newest on the right).
+    private func drawSparkline(_ buckets: [Int], in rect: NSRect, color: NSColor) {
+        let maxV = CGFloat(max(1, buckets.max() ?? 1))
+        let bw = rect.width / CGFloat(buckets.count)
+        for (i, v) in buckets.enumerated() {
+            let h = v == 0 ? 1.5 : max(2, rect.height * CGFloat(v) / maxV)
+            let bar = NSRect(x: rect.minX + CGFloat(i) * bw, y: rect.maxY - h,
+                             width: max(1, bw - 1), height: h)
+            color.withAlphaComponent(v > 0 ? 0.85 : 0.2).setFill()
+            NSBezierPath(rect: bar).fill()
+        }
     }
 
     /// Count/alert badge: red when a session needs you, green when one's
@@ -342,9 +382,21 @@ final class PetView: NSView {
         poll()
     }
 
+    /// Busy or waiting on the user (typed helper to keep swiftc fast).
+    private func isActive(_ s: SessionState) -> Bool {
+        let st = s.status
+        return st == "running_tool" || st == "processing" || st == "needs_permission" || s.isHot
+    }
+
     private func poll() {
         let notifications = store.refresh()
         for s in notifications { alert(s) }
+        // Stuck escalation: re-nudge a session that has needed permission for a
+        // while (every ~2 min) so a long-blocked session doesn't get forgotten.
+        let now = Date().timeIntervalSince1970
+        for s in store.sessions where s.status == "needs_permission" && s.waitingSeconds > 120 {
+            if now - (lastNotified[s.session_id] ?? 0) > 120 { alert(s) }
+        }
         resizeWindow()
         needsDisplay = true
     }

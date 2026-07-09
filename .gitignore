@@ -3,3 +3,6 @@ Rocky
 .DS_Store
 
 screensaver/build/
+
+# local planning, not for GitHub
+ROADMAP.md

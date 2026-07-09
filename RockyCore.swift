@@ -57,6 +57,8 @@ struct SessionState: Codable {
     var ts: Double
     var attended_at: Double?
     var title: String?   // resolved from the transcript, not from disk
+    var summary: String? // last assistant line from the transcript ("the story")
+    var recent: [Double]?// recent event timestamps, for the activity sparkline
 }
 
 enum Expr { case idle, working, happy, alert, sleeping, compacting }
@@ -111,6 +113,41 @@ extension SessionState {
         guard let p = pid, p > 0 else { return true }
         return kill(pid_t(p), 0) == 0 || errno == EPERM
     }
+
+    /// The transcript "story" — what the session last said — if we have one.
+    var story: String? {
+        guard let s = summary, !s.isEmpty else { return nil }
+        return s
+    }
+
+    /// Compact "time in current state" label, e.g. "8s", "4m", "2h".
+    func elapsedLabel(_ now: Double = Date().timeIntervalSince1970) -> String {
+        let dt = max(0, now - ts)
+        if dt < 60 { return "\(Int(dt))s" }
+        if dt < 3600 { return "\(Int(dt / 60))m" }
+        return "\(Int(dt / 3600))h"
+    }
+
+    /// How long the session has been waiting on the user (0 if it isn't).
+    var waitingSeconds: Double {
+        guard status == "needs_permission" || isHot else { return 0 }
+        return max(0, Date().timeIntervalSince1970 - ts)
+    }
+
+    /// Recent activity bucketed into `bins` counts over the last `window`
+    /// seconds (newest on the right) — drives the sparkline.
+    func activityBuckets(bins: Int = 14, window: Double = 150) -> [Int] {
+        var b = [Int](repeating: 0, count: bins)
+        guard let r = recent, !r.isEmpty else { return b }
+        let now = Date().timeIntervalSince1970
+        for t in r {
+            let age = now - t
+            if age < 0 || age > window { continue }
+            let idx = bins - 1 - Int((age / window) * Double(bins))
+            if idx >= 0 && idx < bins { b[idx] += 1 }
+        }
+        return b
+    }
 }
 
 // MARK: - Claude Code live session registry (~/.claude/sessions/<pid>.json)
@@ -138,6 +175,8 @@ extension SessionState {
         ts = (r.updatedAt ?? 0) / 1000.0
         attended_at = nil
         title = r.name
+        summary = nil
+        recent = nil
     }
 }
 
