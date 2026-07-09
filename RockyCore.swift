@@ -5,11 +5,22 @@
 
 import AppKit
 import Foundation
+import Darwin
+
+/// The user's real home directory, read from the password database rather than
+/// `$HOME`/tilde expansion. Both resolve identically for the widget app, but
+/// inside the sandboxed screen saver `$HOME` is redirected to the saver's
+/// container — so tilde expansion points at an empty directory while the real
+/// `~/.claude` paths (which the sandbox still permits reading) are missed.
+let rockyHome: String = {
+    if let pw = getpwuid(getuid()) { return String(cString: pw.pointee.pw_dir) }
+    return NSHomeDirectory()
+}()
 
 // Rocky's own hook-written state (rich, real-time), and Claude Code's live
 // session registry (authoritative list of every running session).
-let sessionsDir = ("~/.claude/rocky/sessions" as NSString).expandingTildeInPath
-let registryDir = ("~/.claude/sessions" as NSString).expandingTildeInPath
+let sessionsDir = rockyHome + "/.claude/rocky/sessions"
+let registryDir = rockyHome + "/.claude/sessions"
 
 /// Rocky's signature colour — a consistent ginger cat, so it reads as one
 /// character rather than changing per session.
