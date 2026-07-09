@@ -13,6 +13,9 @@ import Darwin
 /// container — so tilde expansion points at an empty directory while the real
 /// `~/.claude` paths (which the sandbox still permits reading) are missed.
 let rockyHome: String = {
+    if let override = ProcessInfo.processInfo.environment["ROCKY_HOME"], !override.isEmpty {
+        return override                                   // testing / non-standard setups
+    }
     if let pw = getpwuid(getuid()) { return String(cString: pw.pointee.pw_dir) }
     return NSHomeDirectory()
 }()

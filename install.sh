@@ -60,5 +60,11 @@ launchctl bootout "gui/$UID_N/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$UID_N" "$PLIST"
 launchctl kickstart -k "gui/$UID_N/$LABEL" 2>/dev/null || true
 
+if [[ "${1:-}" == "--with-screensaver" ]]; then
+  echo "▸ Building & installing the Rocky screen saver…"
+  bash "$SRC/screensaver/build.sh" --install
+fi
+
 echo "✅ Rocky installed and running."
 echo "   Open a new Claude Code session (or /hooks to reload) so the hooks take effect."
+[[ "${1:-}" == "--with-screensaver" ]] && echo "   Screen saver installed — pick Rocky in System Settings → Screen Saver."

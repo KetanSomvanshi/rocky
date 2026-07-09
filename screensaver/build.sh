@@ -13,15 +13,23 @@ rm -rf "$SAVER"
 mkdir -p "$MACOS"
 cp "$HERE/Info.plist" "$SAVER/Contents/Info.plist"
 
-# Compile the shared core + the saver view into a loadable bundle (MH_BUNDLE).
-xcrun swiftc -O \
-  -module-name RockySaver \
-  -framework ScreenSaver \
-  -emit-library -Xlinker -bundle \
-  -o "$MACOS/Rocky" \
-  "$ROOT/RockyCore.swift" "$HERE/RockySaverView.swift"
+# Compile the shared core + the saver view into a universal loadable bundle
+# (MH_BUNDLE, arm64 + x86_64) so it runs on Apple Silicon and Intel.
+SRCS=("$ROOT/RockyCore.swift" "$HERE/RockySaverView.swift")
+for arch in arm64 x86_64; do
+  xcrun swiftc -O \
+    -target "$arch-apple-macos12.0" \
+    -module-name RockySaver \
+    -framework ScreenSaver \
+    -emit-library -Xlinker -bundle \
+    -o "$MACOS/Rocky.$arch" \
+    "${SRCS[@]}"
+done
+lipo -create "$MACOS/Rocky.arm64" "$MACOS/Rocky.x86_64" -output "$MACOS/Rocky"
+rm -f "$MACOS/Rocky.arm64" "$MACOS/Rocky.x86_64"
 
 file "$MACOS/Rocky"
+lipo -info "$MACOS/Rocky"
 
 if [[ "${1:-}" == "--install" ]]; then
   DEST="$HOME/Library/Screen Savers/Rocky.saver"

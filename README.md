@@ -31,6 +31,16 @@ A single frosted, always-on-top widget — no window to manage, no tab to hunt f
   <img src="docs/expanded.png" width="300" alt="expanded: hero pet plus a tab per session">
 </p>
 
+### Even while you're away
+
+Rocky ships an optional **screen saver** too: step away and your Mac shows the
+cat, a live clock, and every session's status — with a soft glow when one needs
+you. Glance across the room and know if a session is blocked, without unlocking.
+
+<p align="center">
+  <img src="docs/screensaver.png" width="620" alt="Rocky screen saver: a centered card with a clock, the pet, and a list of sessions, glowing red because one needs permission">
+</p>
+
 ## What it does
 
 - **One hero pet** (a ginger cat named Rocky) sits on your screen and animates
@@ -93,6 +103,20 @@ Island, are left untouched).
 
 Either way, open a fresh Claude Code session (or run `/hooks` in an existing
 one) so the hooks load.
+
+### Screen saver (optional)
+
+To also install the screen saver, add `--with-screensaver` to the source
+installer, or build it directly:
+
+```bash
+./install.sh --with-screensaver      # from source, alongside the widget
+# or, standalone:
+./screensaver/build.sh --install
+```
+
+Then pick **Rocky** in System Settings → Screen Saver. It's a universal
+(Apple Silicon + Intel) build and reads the same session data as the widget.
 
 ## How it works
 
