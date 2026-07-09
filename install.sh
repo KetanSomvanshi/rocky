@@ -56,8 +56,11 @@ PLIST_EOF
 
 echo "▸ (Re)loading agent…"
 UID_N="$(id -u)"
+# Best-effort reload: bootout can race with bootstrap and return a transient
+# I/O error, so pause between them and never let it abort the installer.
 launchctl bootout "gui/$UID_N/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$UID_N" "$PLIST"
+sleep 1
+launchctl bootstrap "gui/$UID_N" "$PLIST" 2>/dev/null || true
 launchctl kickstart -k "gui/$UID_N/$LABEL" 2>/dev/null || true
 
 if [[ "${1:-}" == "--with-screensaver" ]]; then
