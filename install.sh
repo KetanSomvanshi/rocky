@@ -36,45 +36,7 @@ cp "$SRC/rocky-hook.py" "$DEST/rocky-hook.py"
 chmod +x "$DEST/rocky-hook.py"
 
 echo "▸ Wiring Claude Code hooks into settings.json (merge, idempotent)…"
-python3 - "$SETTINGS" <<'PY'
-import json, os, sys
-path = sys.argv[1]
-cmd = "python3 ~/.claude/rocky/rocky-hook.py"
-events = ["UserPromptSubmit","PreToolUse","PostToolUse","Stop",
-          "Notification","SessionStart","SessionEnd","PreCompact"]
-try:
-    with open(path) as f: cfg = json.load(f)
-except FileNotFoundError:
-    cfg = {}
-hooks = cfg.setdefault("hooks", {})
-entry = {"type":"command","command":cmd,"async":True,"timeout":10}
-
-def has_rocky(groups):
-    for g in groups:
-        for h in g.get("hooks", []):
-            if h.get("command","").endswith("rocky-hook.py") or "rocky-hook.py" in h.get("command",""):
-                return True
-    return False
-
-for ev in events:
-    groups = hooks.setdefault(ev, [])
-    if has_rocky(groups):
-        continue
-    # Prefer joining an existing wildcard/no-matcher group so we don't
-    # duplicate a matcher; otherwise add our own group.
-    target = next((g for g in groups if g.get("matcher") in (None,"*","")), None)
-    if target is None:
-        target = {"hooks": []}
-        # keep the same matcher style Claude Island uses for tool events
-        if ev in ("PreToolUse","PostToolUse","Notification"):
-            target["matcher"] = "*"
-        groups.append(target)
-    target.setdefault("hooks", []).append(dict(entry))
-
-with open(path,"w") as f:
-    json.dump(cfg, f, indent=2)
-print("  hooks wired for:", ", ".join(events))
-PY
+python3 "$SRC/scripts/wire-hooks.py" wire "python3 $DEST/rocky-hook.py"
 
 echo "▸ Writing LaunchAgent ($PLIST)…"
 mkdir -p "$HOME/Library/LaunchAgents"
