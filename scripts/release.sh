@@ -19,7 +19,7 @@
 #   DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)"  scripts/release.sh 1.0.0
 set -euo pipefail
 
-VERSION="${1:-1.0.0}"
+VERSION="${1:-1.1.0}"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="$SRC/build"
 APP="$BUILD/Rocky.app"
