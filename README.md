@@ -61,6 +61,21 @@ A single always-on-top widget — no window to manage, no tab to hunt for. Colla
 
 ## Install
 
+### Homebrew (recommended)
+
+```bash
+brew install ketansomvanshi/tap/rocky
+rocky-setup                 # connect Rocky to Claude Code's hooks
+brew services start rocky   # launch now + at login
+```
+
+Homebrew compiles the single Swift file locally, so there's **no Gatekeeper
+"unidentified developer" prompt**. `rocky-setup` merges Rocky's hooks into
+`~/.claude/settings.json` (your existing hooks, including Claude Island, are
+left untouched); `rocky-teardown` removes them again.
+
+### From source
+
 ```bash
 git clone https://github.com/KetanSomvanshi/rocky.git
 cd rocky
@@ -70,8 +85,10 @@ cd rocky
 This compiles Rocky, installs it to `~/.claude/rocky/`, sets it to launch at
 login (a `launchd` agent), and wires the Claude Code hooks into
 `~/.claude/settings.json` (merged — your existing hooks, including Claude
-Island, are left untouched). Open a fresh Claude Code session, or run `/hooks`
-in an existing one, so the hooks load.
+Island, are left untouched).
+
+Either way, open a fresh Claude Code session (or run `/hooks` in an existing
+one) so the hooks load.
 
 ## How it works
 
