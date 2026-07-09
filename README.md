@@ -16,7 +16,7 @@ idle. macOS only.
 
 ### It sits on top of your work
 
-A single always-on-top widget — no window to manage, no tab to hunt for. Collapsed it's just the pet; click it and the sessions fan out.
+A single frosted, always-on-top widget — no window to manage, no tab to hunt for. Collapsed it's just the pet; click it and the sessions fan out.
 
 <p align="center">
   <img src="docs/float-collapsed.png" width="420" alt="Rocky collapsed — a small pet floating in the corner of a code editor with an alert badge">
@@ -37,19 +37,23 @@ A single always-on-top widget — no window to manage, no tab to hunt for. Colla
   with your overall mood — priority order: needs-permission › your-turn ›
   working › idle. A small badge shows the session count, turning red/green when
   a session needs you.
-- **Moods**:
-  - walking/bobbing tail while Claude is working
-  - happy bounce when a session finishes ("your turn")
-  - red shake when a session needs permission
-  - curls up asleep with a `z` when everything's idle
-- **Click the pet** to reveal the **session tabs** — one row per running
-  session with a colour-coded status dot (🔴 needs permission · 🟢 your turn ·
-  🔵 working · ⚪ idle), its name, and status. Click a tab to jump straight to
-  that session's terminal tab. Click the pet again to collapse.
-- **Alerts** when a session finishes or needs permission: the cat's row
-  pulses with a colored glow (green = done, red = needs permission) and a
-  sound plays — all in Rocky itself, no macOS toast/banner. Nothing fires for
-  routine tool calls.
+- **Moods** (hand-animated pixel art):
+  - a walk cycle with a springy tail — and a tiny keyboard tapping away —
+    while Claude is working
+  - a happy bounce when a session finishes ("your turn")
+  - a shake with a 🔒 padlock when a session needs permission
+  - curls up breathing with a `z` when everything's idle, then stretches
+    awake when work resumes
+  - a sparkly all-clear celebration when the last busy session goes quiet
+- **Click the pet** to reveal the **session tabs** — they fan out with a
+  staggered animation, one row per running session with a colour-coded status
+  dot (🔴 needs permission · 🟢 your turn · 🔵 working · ⚪ idle), its name, and
+  status. Click a tab to jump straight to that session's terminal tab. Click
+  the pet again to collapse.
+- **Alerts** when a session finishes or needs permission: a colored ring
+  ripples out from the pet, its row pulses with a matching glow (green = done,
+  red = needs permission), and a sound plays — all in Rocky itself, no macOS
+  toast/banner. Nothing fires for routine tool calls.
 
 ## Requirements
 
@@ -124,12 +128,22 @@ from your terminal, and clicks register on the first try.
 
 ## Uninstall
 
+Homebrew:
+
+```bash
+rocky-teardown              # remove Rocky's hooks from settings.json
+brew services stop rocky
+brew uninstall rocky
+```
+
+From source:
+
 ```bash
 ./uninstall.sh
 ```
 
-Stops the agent, deletes `~/.claude/rocky/`, and removes only Rocky's hooks
-from `settings.json`.
+Either way this stops the agent, removes Rocky's files, and strips only
+Rocky's hooks from `settings.json` (your other hooks are left intact).
 
 ## Clicking a cat → the right terminal tab
 
@@ -161,8 +175,9 @@ read if you're curious how a Claude Code hook can drive a native macOS UI:
 - `main.swift` — the pet: transparent non-activating panel, a hand-drawn pixel
   cat rendered with Core Graphics, and the registry⨯hook merge.
 - `rocky-hook.py` — maps Claude Code hook events to per-session state files.
-- `install.sh` / `uninstall.sh` — build, install the login agent, wire/unwire
-  the hooks in `settings.json` (idempotent; your other hooks are untouched).
+- `install.sh` / `uninstall.sh` — build, install the login agent, and call
+  `scripts/wire-hooks.py` to wire/unwire the hooks in `settings.json`
+  (idempotent; your other hooks are untouched).
 
 ## License
 
