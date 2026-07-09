@@ -273,19 +273,24 @@ enum Cat {
         "..oppo.oppo..",
     ]
 
-    static func draw(in rect: NSRect, tint: NSColor, expr: Expr, tick: Int) {
+    static func draw(in rect: NSRect, tint: NSColor, expr: Expr, tick: Int, wake: Double = 0, scale: Double = 1) {
         let gw = map.map { $0.count }.max() ?? 13
         let gh = map.count
-        let cell = min(rect.width, rect.height) / CGFloat(max(gw, gh) + 1)
+        // `scale` briefly bumps the sprite (a pop on mood change); it recentres
+        // because ox/oy are derived from `cell` below.
+        let cell = min(rect.width, rect.height) / CGFloat(max(gw, gh) + 1) * CGFloat(scale)
 
         // Whole-cat motion by mood.
         var xOff: CGFloat = 0, yOff: CGFloat = 0
         switch expr {
-        case .happy:  yOff = -abs(sin(Double(tick) * 0.35)) * 2.5   // bounce up (flipped view)
-        case .alert:  xOff = (tick % 2 == 0) ? -1.5 : 1.5           // shake
-        case .working: yOff = sin(Double(tick) * 0.5) * 1.0         // gentle bob
+        case .happy:   yOff = -abs(sin(Double(tick) * 0.35)) * 2.5   // bounce up (flipped view)
+        case .alert:   xOff = (tick % 2 == 0) ? -1.5 : 1.5           // shake
+        case .working: yOff = sin(Double(tick) * 0.5) * 1.0          // gentle bob, synced to steps
+        case .sleeping: yOff = sin(Double(tick) * 0.06) * 0.6        // slow breathing rise/fall
         default: break
         }
+        // A fresh wake: a quick upward stretch that settles back down.
+        if wake > 0 { yOff -= CGFloat(wake) * 3.2 }
 
         let ox = rect.minX + (rect.width - cell * CGFloat(gw)) / 2 + xOff
         let oy = rect.minY + (rect.height - cell * CGFloat(gh)) / 2 + yOff
@@ -301,8 +306,30 @@ enum Cat {
             NSBezierPath(rect: r).fill()
         }
 
+        // Springy multi-segment tail: a wave travels up the segments so the tip
+        // trails the base. Energy/curl vary by mood.
+        let (tAmp, tSpd, tLift): (Double, Double, Double)
+        switch expr {
+        case .working:  (tAmp, tSpd, tLift) = (1.6, 0.50, 0)
+        case .alert:    (tAmp, tSpd, tLift) = (2.7, 0.95, 0)      // agitated whip
+        case .happy:    (tAmp, tSpd, tLift) = (1.2, 0.60, -2.4)   // tail held high
+        case .sleeping: (tAmp, tSpd, tLift) = (0.25, 0.05, 0.6)   // barely stirs, drapes down
+        default:        (tAmp, tSpd, tLift) = (0.8, 0.14, 0)      // idle slow sway
+        }
+        let segN = 6
+        for i in 0..<segN {
+            let t = Double(i) / Double(segN - 1)                 // 0 base → 1 tip
+            let phase = Double(tick) * tSpd - Double(i) * 0.7    // wave lags up the tail
+            let sway = sin(phase) * tAmp * (0.3 + t)             // more sway toward the tip
+            let x = 11.2 + t * 0.6 + sway
+            let y = 10.0 + tLift * t - Double(i) * 0.85
+            fill(x, y, i == 0 ? outline : tint)
+        }
+
+        // Body from the sprite map — but skip the front-paw row (12); it's drawn
+        // separately so it can step.
         var eyeCells: [(Int, Int)] = []
-        for (ry, row) in map.enumerated() {
+        for (ry, row) in map.enumerated() where ry != 12 {
             for (cx, ch) in row.enumerated() {
                 switch ch {
                 case "o": fill(Double(cx), Double(ry), outline)
@@ -315,21 +342,27 @@ enum Cat {
             }
         }
 
-        // Tail on the right, tip swishes when working/idle.
-        let swish: Double
-        switch expr {
-        case .working: swish = sin(Double(tick) * 0.5) * 1.5
-        case .idle, .sleeping: swish = sin(Double(tick) * 0.12) * 1.0
-        default: swish = 0
+        // Front paws (row 12): alternate a small lift while working = a walk.
+        let step = Double(tick) * 0.5
+        let liftL = expr == .working ? min(0, sin(step)) * 1.4 : 0
+        let liftR = expr == .working ? min(0, -sin(step)) * 1.4 : 0
+        func paw(_ x0: Int, _ lift: Double) {
+            fill(Double(x0),     12 + lift, outline)
+            fill(Double(x0) + 1, 12 + lift, pink)
+            fill(Double(x0) + 2, 12 + lift, pink)
+            fill(Double(x0) + 3, 12 + lift, outline)
         }
-        fill(11.5, 10, tint)
-        fill(12, 9, tint)
-        fill(12, 8, outline, 1, 0.4)
-        fill(12 + swish, 7, tint)
-        fill(12 + swish, 6.3, tint)
+        paw(2, liftL)
+        paw(7, liftR)
 
         // Eyes per expression (drawn over the eye slots).
-        let blinking = (expr == .sleeping) || (tick % 42 < 3)
+        // Blink rhythm has variety: a lone blink, then a quick double-blink, on
+        // a ~12s loop — reads far more alive than a fixed metronome. A fresh
+        // wake forces the eyes wide.
+        let bc = tick % 132
+        let blinking = wake <= 0 && ((expr == .sleeping)
+            || (bc >= 24 && bc < 27)
+            || (bc >= 92 && bc < 95) || (bc >= 100 && bc < 103))
         let eyeDark = NSColor(white: 0.1, alpha: 1)
         // Group the two 2x2 eye clusters by their left column.
         let cols = Set(eyeCells.map { $0.0 }).sorted()
@@ -382,7 +415,7 @@ enum Cat {
 
 final class PetView: NSView {
     let store = SessionStore()
-    var expanded = false
+    var expanded = false { didSet { if expanded && !oldValue { expandStart = tick } } }
     private var tick = 0
 
     // Hit-test rects, rebuilt each draw.
@@ -403,17 +436,57 @@ final class PetView: NSView {
     private var flashUntil: [String: Double] = [:]
     private let flashDuration = 1.4
 
+    // Wake-stretch: when the hero pet leaves the sleeping state, play a brief
+    // stretch that settles over ~1s.
+    private var lastHeroExpr: Expr = .idle
+    private var wakeStart = -1000
+    private var wake: Double {
+        let dt = tick - wakeStart
+        return (dt >= 0 && dt < 11) ? (1 - Double(dt) / 11) : 0
+    }
+
+    // A small scale-pop whenever the hero's mood changes — the pet "reacts".
+    private var exprChangeStart = -1000
+    private var exprPop: Double {
+        let dt = tick - exprChangeStart
+        return (dt >= 0 && dt < 6) ? (1 - Double(dt) / 6) : 0
+    }
+
+    // Staggered reveal of session tabs when the panel expands.
+    private var expandStart = -1000
+
+    // Expanding ripple ring on a fresh alert (colour = that session's status).
+    private var rippleStart = -1000
+    private var rippleColor = NSColor.white
+
+    // Badge pop when the session count changes.
+    private var lastBadgeCount = -1
+    private var badgePopStart = -1000
+
     override var isFlipped: Bool { true }
 
     // MARK: Draw
 
     override func draw(_ dirty: NSRect) {
-        let bg = NSBezierPath(roundedRect: bounds, xRadius: L.corner, yRadius: L.corner)
-        NSColor(white: 0.11, alpha: 0.92).setFill(); bg.fill()
-        NSColor(white: 1, alpha: 0.08).setStroke(); bg.lineWidth = 1; bg.stroke()
+        // A thin dark scrim over the vibrancy blur keeps text/sprite legible
+        // while letting the blurred backdrop show through. A soft top-edge
+        // highlight + hairline border give the panel a rounded, lit edge.
+        let bg = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+                              xRadius: L.corner, yRadius: L.corner)
+        NSColor(white: 0.10, alpha: 0.55).setFill(); bg.fill()
+        NSColor(white: 1, alpha: 0.14).setStroke(); bg.lineWidth = 1; bg.stroke()
 
         tabRects.removeAll()
         guard let primary = store.primary else { return }
+
+        // Hero mood change: a small reaction pop, plus a wake-stretch on waking.
+        let e = primary.expr
+        if e != lastHeroExpr {
+            if lastHeroExpr == .sleeping && e != .sleeping { wakeStart = tick }
+            exprChangeStart = tick
+            lastHeroExpr = e
+        }
+
         if expanded { drawExpanded(primary) } else { drawCollapsed(primary) }
     }
 
@@ -424,7 +497,9 @@ final class PetView: NSView {
         let c = NSRect(x: (bounds.width - L.heroCat) / 2,
                        y: (bounds.height - L.heroCat) / 2,
                        width: L.heroCat, height: L.heroCat)
-        Cat.draw(in: c, tint: rockyTint, expr: primary.expr, tick: tick)
+        Cat.draw(in: c, tint: rockyTint, expr: primary.expr, tick: tick,
+                 wake: wake, scale: 1 + exprPop * 0.12)
+        drawRipple(center: NSPoint(x: bounds.midX, y: bounds.midY), baseRadius: L.heroCat / 2)
         drawBadge(center: NSPoint(x: bounds.width - 11, y: 11))
     }
 
@@ -440,7 +515,9 @@ final class PetView: NSView {
 
         let c = NSRect(x: L.pad, y: (L.heroH - L.heroCat) / 2,
                        width: L.heroCat, height: L.heroCat)
-        Cat.draw(in: c, tint: rockyTint, expr: primary.expr, tick: tick)
+        Cat.draw(in: c, tint: rockyTint, expr: primary.expr, tick: tick,
+                 wake: wake, scale: 1 + exprPop * 0.12)
+        drawRipple(center: NSPoint(x: c.midX, y: c.midY), baseRadius: L.heroCat / 2)
 
         let tx = c.maxX + L.pad
         let tw = bounds.width - tx - 20
@@ -466,10 +543,28 @@ final class PetView: NSView {
         var y = L.heroH
         for (i, s) in store.sessions.enumerated() {
             let r = NSRect(x: 0, y: y, width: bounds.width, height: L.tabH)
-            drawTab(s, in: r, hover: i == hoverTab)
+            // Staggered reveal: each row eases in (fade + slide up) shortly after
+            // the one above it when the panel first opens.
+            let reveal = tabReveal(index: i)
+            if reveal < 1, let cg = NSGraphicsContext.current?.cgContext {
+                NSGraphicsContext.saveGraphicsState()
+                cg.setAlpha(CGFloat(reveal))
+                cg.translateBy(x: 0, y: CGFloat(1 - reveal) * 8)   // starts lower, rises (flipped)
+                drawTab(s, in: r, hover: i == hoverTab)
+                NSGraphicsContext.restoreGraphicsState()
+            } else {
+                drawTab(s, in: r, hover: i == hoverTab)
+            }
             tabRects.append((r, s))
             y += L.tabH
         }
+    }
+
+    /// 0→1 ease-out reveal for tab `index`, staggered after the panel opens.
+    private func tabReveal(index: Int) -> Double {
+        let elapsed = Double(tick - expandStart - index * 2)   // 2-tick stagger per row
+        let p = max(0, min(1, elapsed / 7))                    // ~0.6s per row
+        return 1 - (1 - p) * (1 - p)                           // ease-out
     }
 
     private func drawTab(_ s: SessionState, in rect: NSRect, hover: Bool) {
@@ -507,7 +602,11 @@ final class PetView: NSView {
         let waiting = store.sessions.contains { $0.isHot }
         let count = store.sessions.count
         if count <= 1 && !perm && !waiting { return }
-        let d: CGFloat = 16
+        // Pop the badge whenever the count changes (or it first appears).
+        if count != lastBadgeCount { badgePopStart = tick; lastBadgeCount = count }
+        let pd = tick - badgePopStart
+        let pop = (pd >= 0 && pd < 8) ? (1 - Double(pd) / 8) : 0
+        let d: CGFloat = 16 * (1 + CGFloat(pop) * 0.5)
         let r = NSRect(x: center.x - d / 2, y: center.y - d / 2, width: d, height: d)
         let col = perm ? statusColor("needs_permission")
                 : (waiting ? statusColor("waiting_for_input") : NSColor(white: 0.32, alpha: 0.95))
@@ -518,6 +617,20 @@ final class PetView: NSView {
         ])
         let sz = label.size()
         label.draw(at: NSPoint(x: r.midX - sz.width / 2, y: r.midY - sz.height / 2))
+    }
+
+    /// One-shot ring that expands outward from the pet the instant an alert
+    /// fires — a sharper attention cue than the steady glow.
+    private func drawRipple(center: NSPoint, baseRadius: CGFloat) {
+        let d = tick - rippleStart
+        guard d >= 0 && d < 12 else { return }
+        let p = CGFloat(d) / 12
+        let radius = baseRadius + p * 16
+        rippleColor.withAlphaComponent((1 - p) * 0.7).setStroke()
+        let ring = NSBezierPath(ovalIn: NSRect(x: center.x - radius, y: center.y - radius,
+                                               width: radius * 2, height: radius * 2))
+        ring.lineWidth = 0.5 + (1 - p) * 2
+        ring.stroke()
     }
 
     /// Strongest active attention pulse, coloured by that session's state.
@@ -564,7 +677,6 @@ final class PetView: NSView {
         } else {
             win.setFrame(f, display: true)
         }
-        setFrameSize(f.size)
         window?.invalidateCursorRects(for: self)
     }
 
@@ -594,6 +706,8 @@ final class PetView: NSView {
         if let last = lastNotified[s.session_id], now - last < 8 { return }
         lastNotified[s.session_id] = now
         flashUntil[s.session_id] = now + flashDuration
+        rippleStart = tick
+        rippleColor = statusColor(s.status)
         NSSound(named: s.status == "needs_permission" ? "Funk" : "Glass")?.play()
         window?.orderFront(nil)
     }
@@ -816,8 +930,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.ignoresMouseEvents = false
         window.acceptsMouseMovedEvents = true
 
+        // Container holds a genuine background-blur layer with the pet drawn on
+        // top, so Rocky picks up the desktop/window behind it (native widget
+        // look) instead of a flat dark rectangle.
+        let container = NSView(frame: start)
+        container.autoresizesSubviews = true
+
+        let blur = NSVisualEffectView(frame: start)
+        blur.material = .hudWindow
+        blur.blendingMode = .behindWindow
+        blur.state = .active
+        blur.wantsLayer = true
+        blur.layer?.cornerRadius = L.corner
+        blur.layer?.masksToBounds = true
+        blur.autoresizingMask = [.width, .height]
+        container.addSubview(blur)
+
         pet = PetView(frame: start)
-        window.contentView = pet
+        pet.autoresizingMask = [.width, .height]
+        container.addSubview(pet)
+
+        window.contentView = container
 
         // Restore saved position, else top-right — but never off-screen.
         if let saved = UserDefaults.standard.string(forKey: "rocky.origin") {
