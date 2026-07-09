@@ -1,3 +1,5 @@
 Rocky
 *.o
 .DS_Store
+
+screensaver/build/
