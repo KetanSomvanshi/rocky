@@ -400,6 +400,54 @@ enum Cat {
             let phase = CGFloat((tick / 6) % 3)
             z.draw(at: NSPoint(x: ox + cell * 12, y: oy - cell * 2 - phase * cell))
         }
+
+        // Mood props — a small accessory that reinforces the current state.
+        switch expr {
+        case .working:
+            // Mini keyboard below the paws; one key lights in sequence = typing.
+            let kbW = 8.0 * cell, kbH = 2.6 * cell
+            let kbX = ox + (13.0 * cell - kbW) / 2, kbY = oy + 12.9 * cell
+            NSColor(white: 0.20, alpha: 0.95).setFill()
+            NSBezierPath(roundedRect: NSRect(x: kbX, y: kbY, width: kbW, height: kbH),
+                         xRadius: cell * 0.5, yRadius: cell * 0.5).fill()
+            let lit = (tick / 3) % 8
+            let keyW = cell * 1.4, keyH = cell * 0.8
+            var idx = 0
+            for r in 0..<2 {
+                for cc in 0..<4 {
+                    (idx == lit ? tint : NSColor(white: 0.45, alpha: 1)).setFill()
+                    let kx = kbX + cell * 0.6 + Double(cc) * (keyW + cell * 0.35)
+                    let ky = kbY + cell * 0.5 + Double(r) * (keyH + cell * 0.35)
+                    NSBezierPath(roundedRect: NSRect(x: kx, y: ky, width: keyW, height: keyH),
+                                 xRadius: cell * 0.2, yRadius: cell * 0.2).fill()
+                    idx += 1
+                }
+            }
+        case .alert:
+            // Padlock accessory (top-left) with a periodic glint.
+            let lw = 3.0 * cell, lh = 2.6 * cell
+            let lx = ox + 0.2 * cell, ly = oy - 0.3 * cell
+            let sT = cell * 0.55
+            NSColor(white: 0.78, alpha: 1).setFill()
+            NSBezierPath(rect: NSRect(x: lx + cell * 0.5, y: ly, width: lw - cell, height: sT)).fill()
+            NSBezierPath(rect: NSRect(x: lx + cell * 0.5, y: ly, width: sT, height: cell * 1.4)).fill()
+            NSBezierPath(rect: NSRect(x: lx + lw - cell * 0.5 - sT, y: ly, width: sT, height: cell * 1.4)).fill()
+            NSColor(calibratedRed: 0.98, green: 0.80, blue: 0.30, alpha: 1).setFill()
+            NSBezierPath(roundedRect: NSRect(x: lx, y: ly + cell * 1.1, width: lw, height: lh),
+                         xRadius: cell * 0.4, yRadius: cell * 0.4).fill()
+            NSColor(white: 0.15, alpha: 1).setFill()
+            NSBezierPath(ovalIn: NSRect(x: lx + lw / 2 - cell * 0.35, y: ly + cell * 1.1 + lh * 0.32,
+                                        width: cell * 0.7, height: cell * 0.7)).fill()
+            if tick % 20 < 5 {
+                NSColor.white.withAlphaComponent(1 - CGFloat(tick % 20) / 5).setStroke()
+                let gx = lx + lw * 0.12, gy = ly + cell * 1.4
+                let g = NSBezierPath(); g.lineWidth = cell * 0.3
+                g.move(to: NSPoint(x: gx - cell * 0.5, y: gy)); g.line(to: NSPoint(x: gx + cell * 0.5, y: gy))
+                g.move(to: NSPoint(x: gx, y: gy - cell * 0.5)); g.line(to: NSPoint(x: gx, y: gy + cell * 0.5))
+                g.stroke()
+            }
+        default: break
+        }
     }
 
     /// Deterministic pastel fur colour from the project path.
@@ -463,6 +511,12 @@ final class PetView: NSView {
     private var lastBadgeCount = -1
     private var badgePopStart = -1000
 
+    // All-clear celebration: a brief happy bounce + sparkles when the last
+    // busy/attention session goes calm.
+    private var wasActive = false
+    private var celebrateStart = -1000
+    private var celebrating: Bool { tick - celebrateStart < 18 }
+
     override var isFlipped: Bool { true }
 
     // MARK: Draw
@@ -479,8 +533,17 @@ final class PetView: NSView {
         tabRects.removeAll()
         guard let primary = store.primary else { return }
 
+        // All-clear: everything just went calm after being busy → celebrate.
+        let active = store.sessions.contains {
+            $0.status == "running_tool" || $0.status == "processing"
+                || $0.status == "needs_permission" || $0.isHot
+        }
+        if wasActive && !active { celebrateStart = tick }
+        wasActive = active
+
         // Hero mood change: a small reaction pop, plus a wake-stretch on waking.
-        let e = primary.expr
+        // (The celebration bounce is driven separately, below.)
+        let e = celebrating ? Expr.happy : primary.expr
         if e != lastHeroExpr {
             if lastHeroExpr == .sleeping && e != .sleeping { wakeStart = tick }
             exprChangeStart = tick
@@ -497,9 +560,10 @@ final class PetView: NSView {
         let c = NSRect(x: (bounds.width - L.heroCat) / 2,
                        y: (bounds.height - L.heroCat) / 2,
                        width: L.heroCat, height: L.heroCat)
-        Cat.draw(in: c, tint: rockyTint, expr: primary.expr, tick: tick,
+        Cat.draw(in: c, tint: rockyTint, expr: celebrating ? .happy : primary.expr, tick: tick,
                  wake: wake, scale: 1 + exprPop * 0.12)
         drawRipple(center: NSPoint(x: bounds.midX, y: bounds.midY), baseRadius: L.heroCat / 2)
+        if celebrating { drawSparkles(center: NSPoint(x: c.midX, y: c.midY), radius: L.heroCat / 2) }
         drawBadge(center: NSPoint(x: bounds.width - 11, y: 11))
     }
 
@@ -515,9 +579,10 @@ final class PetView: NSView {
 
         let c = NSRect(x: L.pad, y: (L.heroH - L.heroCat) / 2,
                        width: L.heroCat, height: L.heroCat)
-        Cat.draw(in: c, tint: rockyTint, expr: primary.expr, tick: tick,
+        Cat.draw(in: c, tint: rockyTint, expr: celebrating ? .happy : primary.expr, tick: tick,
                  wake: wake, scale: 1 + exprPop * 0.12)
         drawRipple(center: NSPoint(x: c.midX, y: c.midY), baseRadius: L.heroCat / 2)
+        if celebrating { drawSparkles(center: NSPoint(x: c.midX, y: c.midY), radius: L.heroCat / 2) }
 
         let tx = c.maxX + L.pad
         let tw = bounds.width - tx - 20
@@ -631,6 +696,27 @@ final class PetView: NSView {
                                                width: radius * 2, height: radius * 2))
         ring.lineWidth = 0.5 + (1 - p) * 2
         ring.stroke()
+    }
+
+    /// Twinkling sparkles orbiting the pet during the all-clear celebration.
+    private func drawSparkles(center: NSPoint, radius: CGFloat) {
+        let d = tick - celebrateStart
+        guard d >= 0 && d < 18 else { return }
+        let fade = 1 - CGFloat(d) / 18
+        let green = NSColor(calibratedRed: 0.40, green: 0.86, blue: 0.52, alpha: 1)
+        let gold = NSColor(calibratedRed: 0.98, green: 0.82, blue: 0.35, alpha: 1)
+        for i in 0..<5 {
+            let ang = Double(i) * 1.257 + Double(d) * 0.12
+            let rr = radius * (0.85 + 0.45 * sin(Double(d) * 0.3 + Double(i) * 1.7))
+            let px = center.x + CGFloat(cos(ang)) * rr
+            let py = center.y + CGFloat(sin(ang)) * rr
+            let s = CGFloat(2 + 1.6 * abs(sin(Double(d) * 0.45 + Double(i))))
+            (i % 2 == 0 ? green : gold).withAlphaComponent(fade).setStroke()
+            let star = NSBezierPath(); star.lineWidth = 1.4
+            star.move(to: NSPoint(x: px - s, y: py)); star.line(to: NSPoint(x: px + s, y: py))
+            star.move(to: NSPoint(x: px, y: py - s)); star.line(to: NSPoint(x: px, y: py + s))
+            star.stroke()
+        }
     }
 
     /// Strongest active attention pulse, coloured by that session's state.
