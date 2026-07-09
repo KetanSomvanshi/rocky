@@ -19,6 +19,11 @@ permissions:
 
 jobs:
   release:
+    # Dormant until you set up an Apple Developer ID and enable it: add a repo
+    # variable SIGN_RELEASES=true (Settings → Secrets and variables → Actions →
+    # Variables) plus the signing secrets in docs/RELEASING.md. Until then the
+    # job is skipped, so version tags don't produce failing checks.
+    if: ${{ vars.SIGN_RELEASES == 'true' }}
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4

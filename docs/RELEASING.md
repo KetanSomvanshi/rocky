@@ -46,8 +46,11 @@ repository secrets first (Settings → Secrets and variables → Actions):
 | `APPLE_TEAM_ID` | Your 10-char Team ID |
 | `APPLE_APP_PASSWORD` | The app-specific password |
 
-Until these secrets exist, the workflow's signing step fails by design — that's
-the only part that needs your Apple account.
+The job is **gated on a repository variable** so unconfigured tags don't fail:
+set `SIGN_RELEASES` to `true` (Settings → Secrets and variables → Actions →
+**Variables**) once the secrets above are in place. Until then the release job
+is skipped (a neutral check, not a failure), and you cut releases manually with
+`scripts/release.sh` + `gh release create`.
 
 ## Updating the Homebrew formula on a new version
 
