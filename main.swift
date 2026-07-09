@@ -334,8 +334,11 @@ enum Cat {
         // Group the two 2x2 eye clusters by their left column.
         let cols = Set(eyeCells.map { $0.0 }).sorted()
         // cols like [3,4,8,9] → two eyes at (3,4) and (8,9)
-        let eyes: [(Int, Int)] = stride(from: 0, to: cols.count, by: 2).compactMap {
-            $0 + 1 < cols.count ? (cols[$0], cols[$0 + 1]) : nil
+        var eyes: [(Int, Int)] = []
+        var ci = 0
+        while ci + 1 < cols.count {
+            eyes.append((cols[ci], cols[ci + 1]))
+            ci += 2
         }
         let rows = Set(eyeCells.map { $0.1 }).sorted()
         guard let topRow = rows.first, let botRow = rows.last else { return }
