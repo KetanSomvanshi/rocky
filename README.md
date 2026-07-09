@@ -60,6 +60,12 @@ you. Glance across the room and know if a session is blocked, without unlocking.
   dot (🔴 needs permission · 🟢 your turn · 🔵 working · ⚪ idle), its name, and
   status. Click a tab to jump straight to that session's terminal tab. Click
   the pet again to collapse.
+- **Each tab tells the story**, not just the state:
+  - a **transcript peek** of what a session is actually doing or asking
+    ("Finished the migration — want me to run the tests?") when it needs you,
+  - an **elapsed timer** ("needs permission · 4m"), with a stronger pulse and a
+    re-nudge when a session's been blocked too long,
+  - and a tiny **activity sparkline** so busy-vs-idle is obvious at a glance.
 - **Alerts** when a session finishes or needs permission: a colored ring
   ripples out from the pet, its row pulses with a matching glow (green = done,
   red = needs permission), and a sound plays — all in Rocky itself, no macOS
