@@ -12,7 +12,7 @@ SETTINGS="$HOME/.claude/settings.json"
 
 echo "▸ Compiling Rocky…"
 mkdir -p "$DEST/sessions"
-swiftc -O "$SRC/main.swift" -o "$DEST/Rocky"
+swiftc -O "$SRC/RockyCore.swift" "$SRC/main.swift" -o "$DEST/Rocky"
 
 echo "▸ Building app bundle…"
 mkdir -p "$APP/Contents/MacOS"

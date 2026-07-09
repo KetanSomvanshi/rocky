@@ -30,7 +30,7 @@ ZIP="$BUILD/Rocky-$VERSION.zip"
 rm -rf "$BUILD"; mkdir -p "$APP/Contents/MacOS"
 
 echo "▸ Compiling Rocky $VERSION…"
-xcrun swiftc -O "$SRC/main.swift" -o "$APP/Contents/MacOS/Rocky"
+xcrun swiftc -O "$SRC/RockyCore.swift" "$SRC/main.swift" -o "$APP/Contents/MacOS/Rocky"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
