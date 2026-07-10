@@ -1400,8 +1400,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
-let delegate = AppDelegate()
-app.delegate = delegate
-app.run()
+// Entry point. Excluded under -D ROCKY_RENDER so the docs-media harness can
+// link PetView and render it offscreen with its own @main; production builds
+// never define that flag. Compiled with -parse-as-library (see install.sh).
+#if !ROCKY_RENDER
+@main enum RockyApp {
+    static func main() {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.run()   // never returns, so `delegate` stays retained
+    }
+}
+#endif

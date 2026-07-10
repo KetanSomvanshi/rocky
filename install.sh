@@ -12,7 +12,7 @@ SETTINGS="$HOME/.claude/settings.json"
 
 echo "▸ Compiling Rocky…"
 mkdir -p "$DEST/sessions"
-swiftc -O "$SRC/RockyCore.swift" "$SRC/main.swift" -o "$DEST/Rocky"
+swiftc -O -parse-as-library "$SRC/RockyCore.swift" "$SRC/main.swift" -o "$DEST/Rocky"
 
 echo "▸ Building app bundle…"
 mkdir -p "$APP/Contents/MacOS"
@@ -25,7 +25,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST_EOF
   <key>CFBundleIdentifier</key><string>$LABEL</string>
   <key>CFBundleName</key><string>Rocky</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.4.0</string>
+  <key>CFBundleShortVersionString</key><string>1.5.0</string>
   <key>LSUIElement</key><true/>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
 </dict></plist>

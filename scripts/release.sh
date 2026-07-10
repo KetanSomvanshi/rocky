@@ -19,7 +19,7 @@
 #   DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)"  scripts/release.sh 1.0.0
 set -euo pipefail
 
-VERSION="${1:-1.4.0}"
+VERSION="${1:-1.5.0}"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="$SRC/build"
 APP="$BUILD/Rocky.app"
@@ -30,7 +30,7 @@ ZIP="$BUILD/Rocky-$VERSION.zip"
 rm -rf "$BUILD"; mkdir -p "$APP/Contents/MacOS"
 
 echo "▸ Compiling Rocky $VERSION…"
-xcrun swiftc -O "$SRC/RockyCore.swift" "$SRC/main.swift" -o "$APP/Contents/MacOS/Rocky"
+xcrun swiftc -O -parse-as-library "$SRC/RockyCore.swift" "$SRC/main.swift" -o "$APP/Contents/MacOS/Rocky"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
