@@ -130,22 +130,23 @@ def atomic_write(path, obj):
             pass
 
 
-def tool_detail(tool_name, tool_input):
-    """Short human string describing what a tool is doing."""
+def tool_detail(tool_name, tool_input, max_len=500):
+    """Human string describing what a tool is doing — long enough to be the
+    *actual* permission-prompt text (a full command/pattern), not a teaser."""
     if not isinstance(tool_input, dict):
         return ""
     if tool_name == "Bash":
-        return tool_input.get("command", "")[:80]
+        return tool_input.get("command", "")[:max_len]
     for key in ("file_path", "path", "pattern", "query", "url", "prompt"):
         if key in tool_input and isinstance(tool_input[key], str):
             val = tool_input[key]
             if key in ("file_path", "path"):
                 val = os.path.basename(val)
-            return val[:80]
+            return val[:max_len]
     return ""
 
 
-def transcript_summary(path, max_len=90):
+def transcript_summary(path, max_len=600):
     """The last assistant text from the JSONL transcript — a short, human
     'what this session is doing/saying' peek. Best-effort; empty on any trouble."""
     if not path or not os.path.exists(path):

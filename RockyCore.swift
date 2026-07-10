@@ -126,6 +126,20 @@ extension SessionState {
         return s
     }
 
+    /// The full pending question, untruncated — what a hover peek shows so the
+    /// "is this worth switching for?" decision can be made without switching.
+    /// For a permission prompt this is the actual tool call being asked about
+    /// (not the generic "needs permission" status line); otherwise it's the
+    /// last thing the session said.
+    var fullPeek: String {
+        if status == "needs_permission" {
+            let t = tool ?? "tool"
+            let d = (detail ?? "").isEmpty ? "" : ": \(detail!)"
+            return "\(t)\(d)"
+        }
+        return story ?? statusLine
+    }
+
     /// Compact "time in current state" label, e.g. "8s", "4m", "2h".
     func elapsedLabel(_ now: Double = Date().timeIntervalSince1970) -> String {
         let dt = max(0, now - ts)

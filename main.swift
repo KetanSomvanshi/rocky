@@ -25,6 +25,39 @@ enum L {
     static let corner: CGFloat = 13
 }
 
+// MARK: - Peek bubble (self-drawn, since native NSView tooltips don't fire
+// for Rocky's window — see the note by `PetView.peekPanel`)
+
+final class PeekBubbleView: NSView {
+    var text: String = "" { didSet { needsDisplay = true } }
+
+    static let maxWidth: CGFloat = 260
+    static let padding: CGFloat = 10
+    private static var attrs: [NSAttributedString.Key: Any] {
+        let p = NSMutableParagraphStyle(); p.lineBreakMode = .byWordWrapping
+        return [.font: NSFont.systemFont(ofSize: 11.5), .foregroundColor: NSColor.white, .paragraphStyle: p]
+    }
+
+    /// Panel size needed to show `text` wrapped at `maxWidth`.
+    static func size(for text: String) -> NSSize {
+        let bound = NSSize(width: maxWidth - padding * 2, height: .greatestFiniteMagnitude)
+        let rect = (text as NSString).boundingRect(with: bound,
+                     options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attrs)
+        return NSSize(width: ceil(rect.width) + padding * 2, height: ceil(rect.height) + padding * 2)
+    }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirty: NSRect) {
+        NSColor(white: 0.08, alpha: 0.97).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
+        NSColor(white: 1, alpha: 0.12).setStroke()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8).stroke()
+        let r = bounds.insetBy(dx: Self.padding, dy: Self.padding)
+        (text as NSString).draw(in: r, withAttributes: Self.attrs)
+    }
+}
+
 // MARK: - The pet view
 
 final class PetView: NSView {
@@ -72,6 +105,14 @@ final class PetView: NSView {
     // Staggered reveal of session tabs when the panel expands.
     private var expandStart = -1000
 
+    // Richer peek: native NSView tooltips never fire for this window (a
+    // borderless, non-activating, .statusBar-level panel in an .accessory
+    // app) — confirmed empirically: mouseMoved reliably tracks real hover,
+    // but stringForToolTip is never called. So the full-text peek on hover is
+    // a small self-drawn auxiliary panel instead; see `updatePeek`.
+    private var peekPanel: NSPanel?
+    private var peekView: PeekBubbleView?
+
     // Expanding ripple ring on a fresh alert (colour = that session's status).
     private var rippleStart = -1000
     private var rippleColor = NSColor.white
@@ -100,7 +141,7 @@ final class PetView: NSView {
         NSColor(white: 1, alpha: 0.14).setStroke(); bg.lineWidth = 1; bg.stroke()
 
         tabRects.removeAll()
-        guard let primary = store.primary else { return }
+        guard let primary = store.primary else { peekPanel?.orderOut(nil); return }
 
         // All-clear: everything just went calm after being busy → celebrate.
         let active = store.sessions.contains(where: isActive)
@@ -117,6 +158,74 @@ final class PetView: NSView {
         }
 
         if expanded { drawExpanded(primary) } else { drawCollapsed(primary) }
+        updatePeek(primary)
+    }
+
+    /// The "richer peek": while hovering the hero or a tab that currently
+    /// wants attention, shows its full pending question in a small
+    /// self-drawn auxiliary panel next to Rocky (native tooltips don't fire
+    /// for this window — see the note on `peekPanel` above).
+    private func updatePeek(_ primary: SessionState) {
+        var target: (text: String, rect: NSRect)?
+        if heroHot, primary.status == "needs_permission" || primary.isHot {
+            target = (primary.fullPeek, heroRect)
+        } else if tabRects.indices.contains(hoverTab) {
+            let s = tabRects[hoverTab].session
+            if s.status == "needs_permission" || s.isHot {
+                target = (s.fullPeek, tabRects[hoverTab].rect)
+            }
+        }
+        guard let target, !target.text.isEmpty, let win = window else {
+            peekPanel?.orderOut(nil)
+            return
+        }
+        showPeek(text: target.text, anchor: target.rect, in: win)
+    }
+
+    private func showPeek(text: String, anchor: NSRect, in win: NSWindow) {
+        let panel: NSPanel
+        let view: PeekBubbleView
+        if let p = peekPanel, let v = peekView {
+            panel = p; view = v
+        } else {
+            let v = PeekBubbleView(frame: .zero)
+            let p = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+                             backing: .buffered, defer: false)
+            p.isFloatingPanel = true
+            p.level = .popUpMenu
+            p.isOpaque = false
+            p.backgroundColor = .clear
+            p.hasShadow = true
+            p.ignoresMouseEvents = true
+            p.becomesKeyOnlyIfNeeded = true
+            p.hidesOnDeactivate = false   // NSPanel defaults this to true, which
+            // hides it whenever the app isn't frontmost — and this .accessory,
+            // nonactivating-panel app never truly becomes frontmost, so the
+            // peek would otherwise never actually be visible.
+            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+            p.contentView = v
+            panel = p; peekPanel = p; peekView = v
+            view = v
+        }
+        view.text = text
+        let size = PeekBubbleView.size(for: text)
+
+        // Anchor beside Rocky, vertically centred on the hovered row —
+        // prefer the left side (Rocky usually sits top-right), fall back to
+        // the right if that would run off-screen, and clamp vertically.
+        let screenAnchor = win.convertToScreen(convert(anchor, to: nil))
+        let vf = NSScreen.screens.first(where: { $0.frame.intersects(win.frame) })?.visibleFrame
+            ?? NSScreen.main?.visibleFrame ?? win.frame
+        let gap: CGFloat = 8
+        var x = win.frame.minX - gap - size.width
+        if x < vf.minX { x = win.frame.maxX + gap }
+        let y = max(vf.minY, min(screenAnchor.midY - size.height / 2, vf.maxY - size.height))
+        panel.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        // orderFront(_:) is unreliable for this .accessory, nonactivating-panel
+        // app (confirmed empirically: the panel reported isVisible but never
+        // actually drew) — orderFrontRegardless() is Apple's documented way to
+        // show a window without requiring the owning app to be active.
+        panel.orderFrontRegardless()
     }
 
     /// Collapsed: just the hero pet + a small count/alert badge.
