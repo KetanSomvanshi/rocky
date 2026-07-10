@@ -6,7 +6,7 @@
   <key>CFBundleIdentifier</key><string>com.ketan.rocky.saver</string>
   <key>CFBundleName</key><string>Rocky</string>
   <key>CFBundlePackageType</key><string>BNDL</string>
-  <key>CFBundleShortVersionString</key><string>1.2.0</string>
+  <key>CFBundleShortVersionString</key><string>1.3.0</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>NSPrincipalClass</key><string>RockySaverView</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>

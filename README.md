@@ -64,20 +64,30 @@ you. Glance across the room and know if a session is blocked, without unlocking.
   - a **transcript peek** of what a session is actually doing or asking
     ("Finished the migration — want me to run the tests?") when it needs you,
   - an **elapsed timer** ("needs permission · 4m"), with a stronger pulse and a
-    re-nudge when a session's been blocked too long,
+    re-nudge when a session's been blocked too long (interval tunable from the
+    right-click menu — "Re-nudge Interval" — default 2 minutes, or off),
   - and a tiny **activity sparkline** so busy-vs-idle is obvious at a glance.
 - **Alerts** when a session finishes or needs permission: a colored ring
   ripples out from the pet, its row pulses with a matching glow (green = done,
   red = needs permission), and a sound plays — all in Rocky itself, no macOS
-  toast/banner. Nothing fires for routine tool calls.
+  toast/banner. Nothing fires for routine tool calls. Rocky never dings for
+  state it just discovered on launch — only for things that changed while it
+  was watching (see [Preferences](#preferences) to tune or silence this).
+- **A tiny preferences layer**, entirely in the right-click menu — no config
+  file, no settings window (see [Preferences](#preferences)).
+- **Self-checks itself**: the right-click menu always shows whether hooks are
+  wired and whether Claude's session registry is readable, so a silent "why
+  did the cat disappear" never happens without an answer.
 
 ## Requirements
 
 - **macOS** (Apple Silicon or Intel), macOS 12+.
 - **Xcode Command Line Tools** for `swiftc` (`xcode-select --install`).
 - **Claude Code** installed.
-- Terminal: **Warp**, **iTerm2**, or **Terminal.app** for click-to-focus
-  (other terminals still show sessions; click just activates the app).
+- Terminal: **Warp**, **iTerm2**, **Terminal.app**, **kitty** (with remote
+  control), **VS Code**, **Cursor**, or **tmux** in any host for
+  click-to-exact-tab focus (other terminals still show sessions; click
+  activates the app, and the tab says so).
 
 ## Install
 
@@ -150,11 +160,42 @@ it's running (from the registry); hooks just make its status richer.
 | Move the window | drag the pet anywhere (position is remembered) |
 | Show / hide session tabs | click the pet |
 | Jump to a session | click its tab |
+| Mute / unmute one session | right-click its tab |
+| Change a preference | right-click the pet (see below) |
 | Launch at login | right-click → Launch at Login |
 | Quit | right-click → Quit Rocky |
 
 The window is a non-activating panel: clicking it never steals keyboard focus
 from your terminal, and clicks register on the first try.
+
+## Preferences
+
+No config file, no settings window — every knob lives in the right-click
+menu and persists the same way the window position already does
+(`UserDefaults`, nothing written to disk you'd need to hand-edit).
+
+| Preference | Options | Notes |
+|---|---|---|
+| **Alert Style** | Ripple + Sound (default) · Ripple Only | Turns the ding off without hiding anything — the tab still pulses and shows its state. |
+| **Pet Size** | Small · Medium (default) · Large | Resizes the whole floating panel live. |
+| **Re-nudge Interval** | 1 / 2 (default) / 5 / 10 min · Never | How often a stuck `needs_permission` session re-alerts. |
+| **Quiet Hours** | Off (default) · 10 PM–8 AM · 11 PM–7 AM · 9 PM–9 AM | A daily window where alerts go quiet automatically. |
+| **Respect macOS Focus** | On (default) · Off | Any Focus/Do Not Disturb mode silences alerts too — see caveat below. |
+| **Mute this session** | per-tab, right-click a row | Stops alerting for just that one session; it stays visible with a 🔕. |
+
+Muting — per-session, Quiet Hours, or Focus — only silences the *interruption*
+(sound, ripple, auto-raising the window). The tab, its status dot, and the
+"stuck" pulse stay visible; Rocky's whole point is peripheral vision, so
+muting never makes a session invisible, only quiet.
+
+> **Focus/Do Not Disturb sync is best-effort.** macOS has no public API for
+> "is Focus on right now" — Rocky reads the same undocumented file several
+> menu-bar utilities use (`~/Library/DoNotDisturb/DB/Assertions.json`), which
+> requires **Full Disk Access** for Rocky and can change shape across macOS
+> releases without notice. If it can't read the file, Rocky never assumes
+> Focus is on (alerts still fire) and the right-click menu says so plainly
+> ("⚠ Focus sync needs Full Disk Access for Rocky") instead of silently doing
+> nothing.
 
 ## Uninstall
 
@@ -182,6 +223,18 @@ Rocky's hooks from `settings.json` (your other hooks are left intact).
   environment — it jumps to the exact tab. No permissions, no config.
 - **iTerm2 / Terminal.app**: fully scriptable — Rocky selects the exact tab by
   tty.
+- **kitty**: exact window via remote control, when it's enabled
+  (`allow_remote_control yes` + `listen_on unix:/tmp/kitty-{kitty_pid}` in
+  kitty.conf). Without it, clicking activates kitty and the tab says so.
+- **VS Code / Cursor**: Rocky opens the session's folder, which these
+  single-instance apps route to the window already showing that workspace.
+- **tmux** (inside any terminal): Rocky selects the exact tmux window + pane,
+  switches the attached client to the right session, then raises the hosting
+  terminal — deep focus even in terminals with no scripting story of their own.
+- **Ghostty / Alacritty / everything else**: no tab-scripting surface exists,
+  so clicking activates the app. Rocky is honest about it: hovering the tab
+  shows *"click focuses \<app\> only"*. (Tip: run Claude inside tmux there and
+  deep focus works.)
 
 ## Which sessions show up
 
@@ -191,11 +244,22 @@ hooks firing. Sessions stay listed as long as their process is alive (even when
 idle) and drop off when they exit. Hooks aren't needed for a session to appear;
 they only enrich its status (tool names, needs-permission, your-turn alerts).
 
+That registry is an undocumented Claude Code internal, so Rocky never trusts it
+blindly: a versioned adapter decodes it, tolerating renamed fields if the
+format drifts, and if it becomes unreadable entirely Rocky degrades to
+**hooks-only mode** (still showing every session that's fired a hook) instead
+of going blank. The right-click menu always shows the current read: "✓
+Registry OK · N sessions" or a plain-language warning if something's off.
+
 ## Notes / limitations
 
-- Logs: `/tmp/rocky.log`.
+- Logs: `/tmp/rocky.log` — includes a self-check line on launch ("Hooks
+  wired?", "Registry readable?") and whenever registry health changes.
 - Rocky reads `~/.claude/sessions/` and `~/.claude/rocky/sessions/` locally and
   never sends anything off your machine.
+- Rocky never alerts for a state it finds already true the moment it (re)starts
+  — only for things that change while it's running — so relaunching Rocky
+  doesn't re-ding you for a session that's been waiting for an hour.
 
 ## How it's built
 

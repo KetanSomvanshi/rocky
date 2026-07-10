@@ -60,6 +60,48 @@ def find_term_app(start_pid):
     return None
 
 
+def tmux_client(tmux_env):
+    """(pid, tty) of the most recently active client attached to our tmux
+    server. Inside tmux the process ancestry dead-ends at the server (a child
+    of launchd), so the hosting terminal must be found via the client."""
+    sock = tmux_env.split(",")[0]
+    try:
+        out = subprocess.run(
+            ["tmux", "-S", sock, "list-clients", "-F",
+             "#{client_activity} #{client_pid} #{client_tty}"],
+            capture_output=True, text=True, timeout=2,
+        ).stdout.strip()
+    except Exception:
+        return None, None
+    best, best_at = (None, None), -1
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) != 3:
+            continue
+        try:
+            at, pid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        if at > best_at:
+            best_at, best = at, (pid, parts[2])
+    return best
+
+
+def proc_env(pid, var):
+    """Read one environment variable from a running process via `ps eww`."""
+    try:
+        out = subprocess.run(
+            ["ps", "eww", "-p", str(pid)],
+            capture_output=True, text=True, timeout=2,
+        ).stdout
+    except Exception:
+        return None
+    for tok in out.split():
+        if tok.startswith(var + "="):
+            return tok[len(var) + 1:] or None
+    return None
+
+
 def get_tty(claude_pid):
     try:
         tty = subprocess.run(
@@ -189,6 +231,15 @@ def main():
 
     claude_pid = os.getppid()
 
+    # Focus handles: this hook runs as a child of the Claude process, so the
+    # session's environment — including the terminal's deep-link vars — is
+    # simply inherited. Captured here once; Rocky.app uses them at click time.
+    tmux_env = os.environ.get("TMUX") or None
+    tmux_pane = os.environ.get("TMUX_PANE") or None
+    warp_url = os.environ.get("WARP_FOCUS_URL") or None
+    kitty_socket = os.environ.get("KITTY_LISTEN_ON") or None
+    kitty_window = os.environ.get("KITTY_WINDOW_ID") or None
+
     # term_app/tty are moderately expensive; cache them from the prior write.
     term_app = None
     tty = None
@@ -199,15 +250,28 @@ def main():
             prev = json.load(f)
         term_app = prev.get("term_app")
         tty = prev.get("tty")
+        warp_url = warp_url or prev.get("warp_url")
         prev_attended = prev.get("attended_at", 0)
         prev_recent = prev.get("recent", []) or []
     except (OSError, json.JSONDecodeError, ValueError):
         pass
 
-    if not term_app:
-        term_app = find_term_app(claude_pid)
-    if not tty:
-        tty = get_tty(claude_pid)
+    if tmux_env:
+        # Host terminal = whatever the tmux *client* runs in; its tty is the
+        # host tab's tty (what iTerm/Terminal scripting needs), and its env
+        # carries the Warp deep link for the tab tmux is attached in.
+        if not term_app or not tty:
+            client_pid, client_tty = tmux_client(tmux_env)
+            if client_pid:
+                term_app = term_app or find_term_app(client_pid)
+                tty = tty or client_tty
+                if not warp_url:
+                    warp_url = proc_env(client_pid, "WARP_FOCUS_URL")
+    else:
+        if not term_app:
+            term_app = find_term_app(claude_pid)
+        if not tty:
+            tty = get_tty(claude_pid)
 
     now = time.time()
     # Rolling activity trace for the sparkline: recent event times, windowed to
@@ -229,6 +293,11 @@ def main():
         "pid": claude_pid,
         "tty": tty,
         "term_app": term_app,
+        "tmux": tmux_env,
+        "tmux_pane": tmux_pane,
+        "warp_url": warp_url,
+        "kitty_socket": kitty_socket,
+        "kitty_window": kitty_window,
         "message": data.get("message", ""),
         "ts": now,
         # When the user submits a new prompt, they've clearly attended to this

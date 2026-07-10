@@ -53,6 +53,12 @@ struct SessionState: Codable {
     var pid: Int?
     var tty: String?
     var term_app: String?
+    // Deep-focus handles the hook captures from the session's environment.
+    var tmux: String?         // TMUX (socket,server-pid,session) when inside tmux
+    var tmux_pane: String?    // TMUX_PANE (%N)
+    var warp_url: String?     // WARP_FOCUS_URL deep link
+    var kitty_socket: String? // KITTY_LISTEN_ON (remote control socket)
+    var kitty_window: String? // KITTY_WINDOW_ID
     var message: String?
     var ts: Double
     var attended_at: Double?
@@ -172,6 +178,8 @@ extension SessionState {
         transcript = nil
         pid = r.pid
         tty = nil; term_app = nil; message = nil
+        tmux = nil; tmux_pane = nil; warp_url = nil
+        kitty_socket = nil; kitty_window = nil
         ts = (r.updatedAt ?? 0) / 1000.0
         attended_at = nil
         title = r.name
@@ -185,11 +193,90 @@ func pidAlive(_ pid: Int) -> Bool {
     return kill(pid_t(pid), 0) == 0 || errno == EPERM
 }
 
+// MARK: - Registry adapter (versioned decode)
+
+/// The registry format is an undocumented Claude Code internal, so decoding
+/// goes through a versioned adapter rather than a bare Codable call: the
+/// strict current schema (v1) first, then a tolerant decode that survives key
+/// renames and number/string type drift. When upstream ships a schema that
+/// needs real translation, it gets its own numbered step here — the rest of
+/// the app never sees anything but `RegistryEntry`.
+enum RegistryAdapter {
+    static func decode(_ data: Data) -> RegistryEntry? {
+        // v1 — the schema Claude Code writes today.
+        if let r = try? JSONDecoder().decode(RegistryEntry.self, from: data) { return r }
+        return tolerant(data)
+    }
+
+    /// Best-effort decode of any JSON object that still smells like a session
+    /// entry: accepts snake_case/renamed keys and numbers-as-strings. Returns
+    /// nil only when no session id or pid can be found at all.
+    private static func tolerant(_ data: Data) -> RegistryEntry? {
+        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return nil
+        }
+        func str(_ keys: [String]) -> String? {
+            for k in keys { if let v = obj[k] as? String, !v.isEmpty { return v } }
+            return nil
+        }
+        func num(_ keys: [String]) -> Double? {
+            for k in keys {
+                if let v = obj[k] as? NSNumber { return v.doubleValue }
+                if let v = obj[k] as? String, let d = Double(v) { return d }
+            }
+            return nil
+        }
+        guard let sid = str(["sessionId", "session_id", "id", "uuid"]),
+              let pid = num(["pid", "processId", "process_id"]) else { return nil }
+        var updated = num(["updatedAt", "updated_at", "statusUpdatedAt", "ts", "timestamp"])
+        if let u = updated, u < 1e12 { updated = u * 1000 }   // epoch-seconds → ms
+        return RegistryEntry(pid: Int(pid), sessionId: sid,
+                             cwd: str(["cwd", "workingDirectory", "working_dir"]),
+                             name: str(["name", "title"]),
+                             status: str(["status", "state"]),
+                             kind: str(["kind", "type"]),
+                             updatedAt: updated)
+    }
+}
+
+/// Outcome of the last registry read — the self-check surfaced in the
+/// right-click menu, and the trigger for log-and-degrade when the
+/// (undocumented) schema shifts underneath us.
+enum RegistryHealth {
+    case ok(sessions: Int)
+    case empty                                // readable, just no sessions
+    case unreadable                           // directory missing or unlistable
+    case degraded(decoded: Int, failed: Int)  // some entries no longer parse
+
+    var label: String {
+        switch self {
+        case .ok(let n): return "✓ Registry OK · \(n) session\(n == 1 ? "" : "s")"
+        case .empty: return "✓ Registry OK · no sessions"
+        case .unreadable: return "⚠ Registry unreadable — hooks-only mode"
+        case .degraded(let d, let f):
+            return "⚠ Registry format changed (\(f) of \(d + f) entries) — hooks fill the gap"
+        }
+    }
+
+    /// Coarse bucket so health is logged on transitions, not every poll.
+    var logKey: String {
+        switch self {
+        case .ok: return "ok"
+        case .empty: return "empty"
+        case .unreadable: return "unreadable"
+        case .degraded: return "degraded"
+        }
+    }
+}
+
 // MARK: - Session store
 
 final class SessionStore {
     private(set) var sessions: [SessionState] = []
+    private(set) var registryHealth: RegistryHealth = .empty
     private var lastStatus: [String: String] = [:]
+    private var lastHealthKey = ""
+    private var seeded = false
 
     /// Merge Claude's live registry (authoritative list of running sessions)
     /// with Rocky's hook data (rich real-time status). The registry guarantees
@@ -211,10 +298,13 @@ final class SessionStore {
         // 2. Registry = every live interactive session (hooks not required).
         var loaded: [SessionState] = []
         var seen = Set<String>()
-        for f in (try? fm.contentsOfDirectory(atPath: registryDir)) ?? [] where f.hasSuffix(".json") {
+        var decoded = 0, failed = 0
+        let registryFiles = try? fm.contentsOfDirectory(atPath: registryDir)
+        for f in registryFiles ?? [] where f.hasSuffix(".json") {
             let p = (registryDir as NSString).appendingPathComponent(f)
-            guard let d = fm.contents(atPath: p),
-                  let r = try? JSONDecoder().decode(RegistryEntry.self, from: d) else { continue }
+            guard let d = fm.contents(atPath: p) else { continue }   // raced with removal
+            guard let r = RegistryAdapter.decode(d) else { failed += 1; continue }
+            decoded += 1
             if (r.kind ?? "interactive") != "interactive" { continue }
             if !pidAlive(r.pid) { continue }
             // Trust hook data only when it's at least as fresh as the registry.
@@ -235,21 +325,48 @@ final class SessionStore {
             seen.insert(r.sessionId)
         }
 
+        // Registry self-check: when the schema shifts or the directory goes
+        // away, log once and degrade — the hook safety net below keeps every
+        // hook-reporting session visible (hooks-only mode, not an empty pet).
+        let health: RegistryHealth =
+            registryFiles == nil ? .unreadable
+            : failed > 0 ? .degraded(decoded: decoded, failed: failed)
+            : decoded == 0 ? .empty
+            : .ok(sessions: decoded)
+        if health.logKey != lastHealthKey {
+            NSLog("Rocky registry self-check: %@", health.label)
+            lastHealthKey = health.logKey
+        }
+        registryHealth = health
+
         // 3. Safety net: alive hook sessions missing from the registry.
         for (id, s) in hookData where !seen.contains(id) { loaded.append(s) }
 
-        // Detect transitions worth an alert.
+        // Detect transitions worth an alert. On the very first refresh (Rocky
+        // just launched or relaunched), every session's status is "new" to
+        // us — silently learn it instead of dinging for old news the user
+        // may already have seen or handled before Rocky was watching again.
         var toNotify: [SessionState] = []
-        for s in loaded {
-            let prev = lastStatus[s.session_id]
-            if s.status != prev {
-                let wasBusy = prev == "running_tool" || prev == "processing" || prev == "compacting"
-                if s.status == "needs_permission" ||
-                   (s.status == "waiting_for_input" && (wasBusy || prev == nil)) {
-                    toNotify.append(s)
+        if seeded {
+            for s in loaded {
+                let prev = lastStatus[s.session_id]
+                if s.status != prev {
+                    // "The ball is in your court": arriving from active work,
+                    // or from a permission prompt that just got resolved one
+                    // way or another (approved/denied at the terminal, not
+                    // through Rocky) — either way, a fresh question counts.
+                    let cameFromBusy = prev == "running_tool" || prev == "processing"
+                        || prev == "compacting" || prev == "needs_permission"
+                    if s.status == "needs_permission" ||
+                       (s.status == "waiting_for_input" && (cameFromBusy || prev == nil)) {
+                        toNotify.append(s)
+                    }
                 }
+                lastStatus[s.session_id] = s.status
             }
-            lastStatus[s.session_id] = s.status
+        } else {
+            for s in loaded { lastStatus[s.session_id] = s.status }
+            seeded = true
         }
         // Forget sessions that vanished.
         let live = Set(loaded.map { $0.session_id })

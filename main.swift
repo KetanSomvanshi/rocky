@@ -13,11 +13,14 @@ import Foundation
 // MARK: - Layout constants
 
 enum L {
-    static let width: CGFloat = 216       // expanded window width
-    static let collapsed: CGFloat = 68    // collapsed = compact pet square
-    static let heroH: CGFloat = 58        // hero (pet) header height when expanded
-    static let heroCat: CGFloat = 46      // the one animated hero cat
-    static let tabH: CGFloat = 31         // per-session tab row
+    // Scaled by the "Pet Size" preference; pad/corner stay fixed so the
+    // panel's chrome doesn't get chunky at Large or cramped at Small.
+    static var scale: CGFloat { PetSize.current.scale }
+    static var width: CGFloat { 216 * scale }       // expanded window width
+    static var collapsed: CGFloat { 68 * scale }    // collapsed = compact pet square
+    static var heroH: CGFloat { 58 * scale }        // hero (pet) header height when expanded
+    static var heroCat: CGFloat { 46 * scale }      // the one animated hero cat
+    static var tabH: CGFloat { 31 * scale }         // per-session tab row
     static let pad: CGFloat = 8
     static let corner: CGFloat = 13
 }
@@ -46,6 +49,7 @@ final class PetView: NSView {
 
     // Attention: debounce + per-session flash timer (in-app, no OS toast).
     private var lastNotified: [String: Double] = [:]
+    private var firstPoll = true
     private var flashUntil: [String: Double] = [:]
     private let flashDuration = 1.4
 
@@ -202,7 +206,7 @@ final class PetView: NSView {
             let breathe = 0.55 + 0.45 * abs(sin(Double(tick) * 0.55))
             sc.withAlphaComponent(fade * 0.4 * CGFloat(breathe)).setFill()
             NSBezierPath(roundedRect: rect.insetBy(dx: 3, dy: 1.5), xRadius: 6, yRadius: 6).fill()
-        } else if s.waitingSeconds > 120 {
+        } else if let esc = Escalation.seconds, s.waitingSeconds > esc {
             // Stuck: a persistent gentle pulse until it's attended to.
             let breathe = 0.4 + 0.35 * abs(sin(Double(tick) * 0.3))
             sc.withAlphaComponent(0.16 * CGFloat(breathe)).setFill()
@@ -236,14 +240,17 @@ final class PetView: NSView {
             chip.draw(at: NSPoint(x: rightEdge - cw, y: rect.minY + 5))
             nameW -= cw + 6
         }
-        NSAttributedString(string: s.displayName, attributes: [
+        let name = MutedSessions.isMuted(s.session_id) ? "🔕 \(s.displayName)" : s.displayName
+        NSAttributedString(string: name, attributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
             .foregroundColor: NSColor.white, .paragraphStyle: pn,
         ]).draw(in: NSRect(x: tx, y: rect.minY + 4, width: nameW, height: 14))
         // Second line: when a session wants you, show the transcript "story"
-        // (what it's asking); otherwise the tool/status line.
+        // (what it's asking); otherwise the tool/status line. On hover, if the
+        // click can't land on the exact tab, say so instead of overpromising.
         let attention = s.status == "needs_permission" || s.isHot
-        let line2 = (attention ? (s.story ?? s.statusLine) : s.statusLine)
+        var line2 = (attention ? (s.story ?? s.statusLine) : s.statusLine)
+        if hover && !s.deepFocus { line2 = s.focusHint }
         NSAttributedString(string: line2, attributes: [
             .font: NSFont.systemFont(ofSize: 9),
             .foregroundColor: NSColor(white: 0.62, alpha: 1), .paragraphStyle: pn,
@@ -390,12 +397,25 @@ final class PetView: NSView {
 
     private func poll() {
         let notifications = store.refresh()
-        for s in notifications { alert(s) }
-        // Stuck escalation: re-nudge a session that has needed permission for a
-        // while (every ~2 min) so a long-blocked session doesn't get forgotten.
         let now = Date().timeIntervalSince1970
-        for s in store.sessions where s.status == "needs_permission" && s.waitingSeconds > 120 {
-            if now - (lastNotified[s.session_id] ?? 0) > 120 { alert(s) }
+        if firstPoll {
+            // SessionStore.refresh() already suppresses `notifications` for
+            // anything seen on this very first call, but the escalation timer
+            // below counts from `lastNotified`, not from a transition — seed
+            // it too, or anything already stuck past the threshold at launch
+            // would immediately re-nudge as if it had just newly gone stuck.
+            for s in store.sessions { lastNotified[s.session_id] = now }
+            firstPoll = false
+        } else {
+            for s in notifications { alert(s) }
+        }
+        // Stuck escalation: re-nudge a session that has needed permission for
+        // a while (tunable via the right-click menu) so a long-blocked
+        // session doesn't get forgotten.
+        if let esc = Escalation.seconds {
+            for s in store.sessions where s.status == "needs_permission" && s.waitingSeconds > esc {
+                if now - (lastNotified[s.session_id] ?? 0) > esc { alert(s) }
+            }
         }
         resizeWindow()
         needsDisplay = true
@@ -405,11 +425,16 @@ final class PetView: NSView {
     private func alert(_ s: SessionState) {
         let now = Date().timeIntervalSince1970
         if let last = lastNotified[s.session_id], now - last < 8 { return }
+        // Debounce state updates regardless of mute/quiet — otherwise a muted
+        // stuck session would hammer this every poll instead of settling.
         lastNotified[s.session_id] = now
+        guard !MutedSessions.isMuted(s.session_id), !QuietGate.isActive else { return }
         flashUntil[s.session_id] = now + flashDuration
         rippleStart = tick
         rippleColor = statusColor(s.status)
-        NSSound(named: s.status == "needs_permission" ? "Funk" : "Glass")?.play()
+        if AlertStyle.current.playsSound {
+            NSSound(named: s.status == "needs_permission" ? "Funk" : "Glass")?.play()
+        }
         window?.orderFront(nil)
     }
 
@@ -488,6 +513,28 @@ final class PetView: NSView {
     }
 
     override func rightMouseDown(with e: NSEvent) {
+        let p = convert(e.locationInWindow, from: nil)
+        // Right-clicking a specific session row gets its own tiny menu
+        // (currently just per-session mute) instead of the app-wide one.
+        if let entry = tabRects.first(where: { $0.rect.contains(p) }) {
+            showTabMenu(for: entry.session, at: e)
+            return
+        }
+        showAppMenu(at: e)
+    }
+
+    private func showTabMenu(for s: SessionState, at e: NSEvent) {
+        let menu = NSMenu()
+        let muted = MutedSessions.isMuted(s.session_id)
+        let item = NSMenuItem(title: muted ? "Unmute \(s.displayName)" : "Mute \(s.displayName)",
+                               action: #selector(toggleSessionMute(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = s.session_id
+        menu.addItem(item)
+        NSMenu.popUpContextMenu(menu, with: e, for: self)
+    }
+
+    private func showAppMenu(at e: NSEvent) {
         let menu = NSMenu()
         menu.addItem(withTitle: expanded ? "Collapse" : "Expand",
                      action: #selector(toggleExpanded), keyEquivalent: "").target = self
@@ -496,12 +543,101 @@ final class PetView: NSView {
         login.state = LoginItem.isEnabled ? .on : .off
         menu.addItem(login)
         menu.addItem(.separator())
+
+        // Alert style — the "sound on/off" knob, framed as a single choice so
+        // it can't disagree with itself.
+        let alertSub = NSMenu()
+        for style: AlertStyle in [.rippleAndSound, .rippleOnly] {
+            let item = NSMenuItem(title: style.label, action: #selector(setAlertStyle(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = style.rawValue
+            item.state = (AlertStyle.current == style) ? .on : .off
+            alertSub.addItem(item)
+        }
+        menu.addItem(submenu(alertSub, title: "Alert Style"))
+
+        // Pet size.
+        let sizeSub = NSMenu()
+        for size: PetSize in [.small, .medium, .large] {
+            let item = NSMenuItem(title: size.label, action: #selector(setPetSize(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = size.rawValue
+            item.state = (PetSize.current == size) ? .on : .off
+            sizeSub.addItem(item)
+        }
+        menu.addItem(submenu(sizeSub, title: "Pet Size"))
+
+        // Re-nudge interval.
+        let escSub = NSMenu()
+        for (label, secs) in Escalation.presets {
+            let item = NSMenuItem(title: label, action: #selector(setEscalation(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = secs
+            item.state = (Escalation.seconds == secs) ? .on : .off
+            escSub.addItem(item)
+        }
+        menu.addItem(submenu(escSub, title: "Re-nudge Interval"))
+
+        // Quiet hours.
+        let quietSub = NSMenu()
+        for (i, preset) in QuietHours.presets.enumerated() {
+            let item = NSMenuItem(title: preset.label, action: #selector(setQuietHours(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = i
+            item.state = QuietHours.sameWindow(QuietHours.window, preset.window) ? .on : .off
+            quietSub.addItem(item)
+        }
+        menu.addItem(submenu(quietSub, title: "Quiet Hours"))
+
+        // Respect macOS Focus — a screen-sharing engineer's instant mute.
+        let focus = NSMenuItem(title: "Respect macOS Focus", action: #selector(toggleFocusSync), keyEquivalent: "")
+        focus.target = self
+        focus.state = FocusSync.enabled ? .on : .off
+        menu.addItem(focus)
+
+        // Health rows (no action → shown greyed, informational only).
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: SelfCheck.hooksLabel, action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: store.registryHealth.label, action: nil, keyEquivalent: ""))
+        if FocusSync.enabled {
+            menu.addItem(NSMenuItem(title: FocusSync.state().menuLabel, action: nil, keyEquivalent: ""))
+        }
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Rocky", action: #selector(NSApp.terminate(_:)), keyEquivalent: "q")
         NSMenu.popUpContextMenu(menu, with: e, for: self)
     }
 
+    private func submenu(_ sub: NSMenu, title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.submenu = sub
+        return item
+    }
+
     @objc private func toggleExpanded() { expanded.toggle(); resizeWindow(animated: true); needsDisplay = true }
     @objc private func toggleLogin() { LoginItem.toggle() }
+    @objc private func toggleSessionMute(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        MutedSessions.toggle(id)
+        needsDisplay = true
+    }
+    @objc private func setAlertStyle(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? Int, let style = AlertStyle(rawValue: raw) else { return }
+        AlertStyle.current = style
+    }
+    @objc private func setPetSize(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? Int, let size = PetSize(rawValue: raw) else { return }
+        PetSize.current = size
+        resizeWindow(animated: true)
+        needsDisplay = true
+    }
+    @objc private func setEscalation(_ sender: NSMenuItem) {
+        Escalation.seconds = sender.representedObject as? Double
+    }
+    @objc private func setQuietHours(_ sender: NSMenuItem) {
+        guard let idx = sender.representedObject as? Int, QuietHours.presets.indices.contains(idx) else { return }
+        QuietHours.window = QuietHours.presets[idx].window
+    }
+    @objc private func toggleFocusSync() { FocusSync.enabled.toggle() }
 }
 
 // MARK: - Notifications & terminal focus (osascript)
@@ -519,18 +655,135 @@ enum Notify {
     }
 }
 
+/// How far a click can take the user for a given session — used both to act
+/// (Terminal.focus) and to be honest about it in the UI (the hover hint).
+extension SessionState {
+    /// Can a click land on the exact tab/window/pane, or only raise the app?
+    var deepFocus: Bool {
+        if tmux != nil && tmux_pane != nil { return true }
+        if warp_url != nil { return true }
+        if kitty_socket != nil && kitty_window != nil { return true }
+        switch term_app {
+        case "Warp": return true                    // ps-env deep link at click time
+        case "iTerm2", "Terminal": return tty != nil
+        case "Code", "Cursor": return !(cwd ?? "").isEmpty
+        default: return false
+        }
+    }
+
+    /// Honest hover hint when the click can only raise the app.
+    var focusHint: String {
+        guard let app = term_app else { return "terminal unknown — click may not focus" }
+        return "click focuses \(app) only"
+    }
+}
+
 enum Terminal {
     static func focus(_ s: SessionState) {
-        // Warp exports WARP_FOCUS_URL (warp://session/<uuid>) in each session's
-        // environment — opening it focuses that exact tab. Read it live from
-        // the Claude process's env; works for every session, no permissions.
-        if let pid = s.pid, let url = warpFocusURL(pid: pid) {
+        // Inside tmux: reveal the exact window/pane first, then raise the
+        // hosting terminal like any other session.
+        if s.tmux != nil { focusTmux(s) }
+        // Warp deep link (warp://session/<uuid>): hook-captured env, with a
+        // live `ps eww` fallback for sessions that never fired a hook.
+        if let url = s.warp_url ?? s.pid.flatMap(warpFocusURL) {
             openURL(url)
             return
         }
-        // Non-Warp terminals.
-        if s.term_app == "iTerm2" { focusITerm(tty: s.tty); return }
-        if let app = s.term_app { Notify.run("tell application \"\(app)\" to activate") }
+        if let sock = s.kitty_socket, let win = s.kitty_window {
+            focusKitty(socket: sock, window: win)
+            return
+        }
+        switch s.term_app {
+        case "iTerm2": focusITerm(tty: s.tty)
+        case "Terminal": focusTerminalApp(tty: s.tty)
+        case "Code": openWorkspace(app: "Visual Studio Code", cwd: s.cwd)
+        case "Cursor": openWorkspace(app: "Cursor", cwd: s.cwd)
+        case let app?:
+            // Ghostty, Alacritty, kitty-without-remote-control…: no scripting
+            // surface for tab focus — raise the app (the tab hint says so).
+            Notify.run("tell application \"\(app)\" to activate")
+        default: break
+        }
+    }
+
+    /// First existing executable among candidate install locations (GUI apps
+    /// don't inherit a shell PATH).
+    private static func firstExecutable(_ paths: [String]) -> String? {
+        paths.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    /// Select the session's tmux window + pane, and point a client showing a
+    /// different session at ours. Best-effort; the host app is raised after.
+    private static func focusTmux(_ s: SessionState) {
+        guard let env = s.tmux, let pane = s.tmux_pane,
+              let sock = env.split(separator: ",").first.map(String.init),
+              let tmux = firstExecutable(["/opt/homebrew/bin/tmux",
+                                          "/usr/local/bin/tmux", "/usr/bin/tmux"])
+        else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = capture(tmux, ["-S", sock, "select-window", "-t", pane])
+            _ = capture(tmux, ["-S", sock, "select-pane", "-t", pane])
+            let sess = capture(tmux, ["-S", sock, "display-message", "-p", "-t", pane,
+                                      "#{session_name}"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !sess.isEmpty else { return }
+            for line in capture(tmux, ["-S", sock, "list-clients",
+                                       "-F", "#{client_tty} #{session_name}"])
+                .split(separator: "\n") {
+                let p = line.split(separator: " ", maxSplits: 1)
+                guard p.count == 2, String(p[1]) != sess else { continue }
+                _ = capture(tmux, ["-S", sock, "switch-client", "-c", String(p[0]), "-t", sess])
+            }
+        }
+    }
+
+    /// kitty remote control: focus the exact window over the session's socket,
+    /// then raise the app (the socket call alone doesn't activate kitty).
+    private static func focusKitty(socket: String, window: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            if let kitten = firstExecutable(["/Applications/kitty.app/Contents/MacOS/kitten",
+                                             "/opt/homebrew/bin/kitten", "/usr/local/bin/kitten"]) {
+                _ = capture(kitten, ["@", "--to", socket, "focus-window", "--match", "id:\(window)"])
+            }
+            Notify.run("tell application \"kitty\" to activate")
+        }
+    }
+
+    /// VS Code / Cursor: `open -a <app> <folder>` focuses the existing window
+    /// showing that folder (the apps are single-instance and route the open
+    /// event to the matching workspace window).
+    private static func openWorkspace(app: String, cwd: String?) {
+        guard let cwd = cwd, !cwd.isEmpty else {
+            Notify.run("tell application \"\(app)\" to activate")
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let p = Process()
+            p.launchPath = "/usr/bin/open"
+            p.arguments = ["-a", app, cwd]
+            try? p.run()
+        }
+    }
+
+    // Terminal.app is scriptable like iTerm2 — select the exact tab by tty.
+    private static func focusTerminalApp(tty: String?) {
+        guard let tty = tty else {
+            Notify.run("tell application \"Terminal\" to activate"); return
+        }
+        Notify.run("""
+        tell application "Terminal"
+          activate
+          repeat with w in windows
+            repeat with t in tabs of w
+              if tty of t is "\(tty)" then
+                set selected of t to true
+                set index of w to 1
+                return
+              end if
+            end repeat
+          end repeat
+        end tell
+        """)
     }
 
     /// Read WARP_FOCUS_URL from a running process's environment via `ps eww`.
@@ -584,6 +837,223 @@ enum Terminal {
           end repeat
         end tell
         """)
+    }
+}
+
+// MARK: - Startup self-check
+
+enum SelfCheck {
+    /// Is rocky-hook.py wired into Claude Code's hook config? Checks the file
+    /// rocky-setup writes (~/.claude/settings.json) plus settings.local.json
+    /// for hand-wired setups. Cheap enough to re-run every menu open.
+    static var hooksWired: Bool {
+        for file in ["settings.json", "settings.local.json"] {
+            let path = rockyHome + "/.claude/" + file
+            guard let d = FileManager.default.contents(atPath: path),
+                  let obj = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+                  let hooks = obj["hooks"] as? [String: Any] else { continue }
+            for groups in hooks.values {
+                for g in (groups as? [[String: Any]]) ?? [] {
+                    for h in (g["hooks"] as? [[String: Any]]) ?? []
+                    where (h["command"] as? String)?.contains("rocky-hook.py") == true {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    static var hooksLabel: String {
+        hooksWired ? "✓ Hooks wired" : "⚠ Hooks not wired — run rocky-setup"
+    }
+}
+
+// MARK: - Escalation (tunable re-nudge interval)
+
+/// How long a `needs_permission` session waits before Rocky re-nudges (sound
+/// + ripple) and the tab starts a persistent stuck-pulse. `nil` = never
+/// re-nudge (the roadmap's "make escalation tunable"); default matches the
+/// original hardcoded 120s so upgrading changes nothing until you touch it.
+enum Escalation {
+    private static let key = "rocky.escalationSeconds"
+    static var seconds: Double? {
+        get {
+            guard let v = UserDefaults.standard.object(forKey: key) as? Double else { return 120 }
+            return v < 0 ? nil : v
+        }
+        set { UserDefaults.standard.set(newValue ?? -1, forKey: key) }
+    }
+    static let presets: [(label: String, seconds: Double?)] = [
+        ("Re-nudge every 1 min", 60), ("Re-nudge every 2 min", 120),
+        ("Re-nudge every 5 min", 300), ("Re-nudge every 10 min", 600),
+        ("Never re-nudge", nil),
+    ]
+}
+
+// MARK: - Preferences (minimal layer — no config file, no settings window;
+// every knob lives in the right-click menu and persists in UserDefaults,
+// exactly like the window position already does)
+
+/// Sound on/off, reframed as one choice instead of a toggle that could
+/// disagree with a separate "alert style" setting.
+enum AlertStyle: Int {
+    case rippleAndSound = 0
+    case rippleOnly = 1
+
+    var label: String {
+        switch self {
+        case .rippleAndSound: return "Ripple + Sound"
+        case .rippleOnly: return "Ripple Only (no sound)"
+        }
+    }
+    var playsSound: Bool { self == .rippleAndSound }
+
+    private static let key = "rocky.alertStyle"
+    static var current: AlertStyle {
+        get { AlertStyle(rawValue: UserDefaults.standard.integer(forKey: key)) ?? .rippleAndSound }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: key) }
+    }
+}
+
+/// Scales the whole floating panel (window + cat + tabs); see `L.scale`.
+enum PetSize: Int {
+    case small = 0, medium = 1, large = 2
+
+    var scale: CGFloat {
+        switch self {
+        case .small: return 0.8
+        case .medium: return 1.0
+        case .large: return 1.25
+        }
+    }
+    var label: String {
+        switch self {
+        case .small: return "Small"
+        case .medium: return "Medium"
+        case .large: return "Large"
+        }
+    }
+
+    private static let key = "rocky.petSize"
+    static var current: PetSize {
+        get { PetSize(rawValue: UserDefaults.standard.integer(forKey: key)) ?? .medium }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: key) }
+    }
+}
+
+/// Per-session "stop pinging me about this one" — the session stays visible
+/// (tab, status dot, stuck-pulse) but never triggers sound/ripple/window-raise.
+enum MutedSessions {
+    private static let key = "rocky.mutedSessions"
+    private static var ids: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: key) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: key) }
+    }
+    static func isMuted(_ id: String) -> Bool { ids.contains(id) }
+    static func toggle(_ id: String) {
+        var s = ids
+        if !s.insert(id).inserted { s.remove(id) }
+        ids = s
+    }
+}
+
+/// A daily quiet window (presets only — no time picker, matching the
+/// "no settings window" constraint). Wraps past midnight when start > end.
+enum QuietHours {
+    private static let startKey = "rocky.quietStartHour"
+    private static let endKey = "rocky.quietEndHour"
+
+    static var window: (start: Int, end: Int)? {
+        get {
+            let s = UserDefaults.standard.integer(forKey: startKey)
+            let e = UserDefaults.standard.integer(forKey: endKey)
+            return s == e ? nil : (s, e)   // start==end (incl. unset 0,0) means off
+        }
+        set {
+            UserDefaults.standard.set(newValue?.start ?? 0, forKey: startKey)
+            UserDefaults.standard.set(newValue?.end ?? 0, forKey: endKey)
+        }
+    }
+
+    static var isActiveNow: Bool {
+        guard let w = window else { return false }
+        let hour = Calendar.current.component(.hour, from: Date())
+        return w.start < w.end
+            ? (hour >= w.start && hour < w.end)
+            : (hour >= w.start || hour < w.end)   // wraps past midnight
+    }
+
+    static func sameWindow(_ a: (start: Int, end: Int)?, _ b: (start: Int, end: Int)?) -> Bool {
+        switch (a, b) {
+        case (nil, nil): return true
+        case let (x?, y?): return x.start == y.start && x.end == y.end
+        default: return false
+        }
+    }
+
+    static let presets: [(label: String, window: (start: Int, end: Int)?)] = [
+        ("Off", nil),
+        ("10 PM – 8 AM", (22, 8)),
+        ("11 PM – 7 AM", (23, 7)),
+        ("9 PM – 9 AM", (21, 9)),
+    ]
+}
+
+/// Best-effort sync with macOS Focus/Do Not Disturb — "a screen-sharing
+/// engineer must be able to mute the cat instantly" without touching Rocky.
+/// The assertions store this reads is an undocumented, unstable Apple format
+/// gated behind Full Disk Access; this never blocks alerts on failure (an
+/// unreadable or reshaped file degrades to `.unavailable`, treated the same
+/// as "Focus is off"), and the menu says so plainly instead of pretending it
+/// works when it can't.
+enum FocusSync {
+    private static let key = "rocky.respectFocus"
+    static var enabled: Bool {
+        get { (UserDefaults.standard.object(forKey: key) as? Bool) ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: key) }
+    }
+
+    enum State {
+        case active, inactive, unavailable
+
+        var menuLabel: String {
+            switch self {
+            case .active: return "🌙 macOS Focus is on — alerts silenced"
+            case .inactive: return "🌙 Focus sync active (Focus is currently off)"
+            case .unavailable: return "⚠ Focus sync needs Full Disk Access for Rocky"
+            }
+        }
+    }
+
+    static func state() -> State {
+        let path = rockyHome + "/Library/DoNotDisturb/DB/Assertions.json"
+        guard let data = FileManager.default.contents(atPath: path),
+              let obj = try? JSONSerialization.jsonObject(with: data) else { return .unavailable }
+        // The assertions schema has shifted across macOS releases and isn't
+        // documented, so this walks generously for anything that looks like
+        // an open-ended (no end date) assertion record, rather than binding
+        // to one exact shape the way RegistryAdapter can for Claude's format.
+        func hasOpenAssertion(_ any: Any) -> Bool {
+            if let dict = any as? [String: Any] {
+                let hasStart = dict.keys.contains { $0.lowercased().contains("startdate") }
+                let hasEnd = dict.keys.contains { $0.lowercased().contains("enddate") }
+                if hasStart && !hasEnd { return true }
+                return dict.values.contains(where: hasOpenAssertion)
+            }
+            if let arr = any as? [Any] { return arr.contains(where: hasOpenAssertion) }
+            return false
+        }
+        return hasOpenAssertion(obj) ? .active : .inactive
+    }
+}
+
+/// Combines every "go quiet" preference into the one gate `alert()` checks.
+enum QuietGate {
+    static var isActive: Bool {
+        if QuietHours.isActiveNow { return true }
+        if FocusSync.enabled && FocusSync.state() == .active { return true }
+        return false
     }
 }
 
@@ -663,6 +1133,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         pet.startTimers()
+        // startTimers ran the first poll synchronously, so registry health is
+        // fresh; one startup line answers "is the plumbing connected?".
+        NSLog("Rocky self-check: %@ · %@", SelfCheck.hooksLabel, pet.store.registryHealth.label)
     }
 }
 
