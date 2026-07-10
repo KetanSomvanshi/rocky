@@ -66,7 +66,14 @@ you. Glance across the room and know if a session is blocked, without unlocking.
   - an **elapsed timer** ("needs permission · 4m"), with a stronger pulse and a
     re-nudge when a session's been blocked too long (interval tunable from the
     right-click menu — "Re-nudge Interval" — default 2 minutes, or off),
-  - and a tiny **activity sparkline** so busy-vs-idle is obvious at a glance.
+  - a tiny **activity sparkline** so busy-vs-idle is obvious at a glance,
+  - a **finish outcome** — when a session ends its turn the row shows *what it
+    did* ("✓ 3 files changed · 2 commands"), derived from the transcript, not
+    just "your turn",
+  - and a thin **context-window meter** under the row that fills and shifts
+    colour (calm → amber → red) as the session's context approaches the
+    model's limit — so "is this about to compact? should I wrap it up?" is
+    answerable at a glance. It hides when there's no estimate yet.
 - **Alerts** when a session finishes or needs permission: a colored ring
   ripples out from the pet, its row pulses with a matching glow (green = done,
   red = needs permission), and a sound plays — all in Rocky itself, no macOS
@@ -160,6 +167,7 @@ it's running (from the registry); hooks just make its status richer.
 | Move the window | drag the pet anywhere (position is remembered) |
 | Show / hide session tabs | click the pet |
 | Jump to a session | click its tab |
+| Jump to the top session | press the global hotkey (default ⌥⌘R) from anywhere, or right-click → Jump to Top Session |
 | Mute / unmute one session | right-click its tab |
 | Change a preference | right-click the pet (see below) |
 | Launch at login | right-click → Launch at Login |
@@ -176,6 +184,7 @@ menu and persists the same way the window position already does
 
 | Preference | Options | Notes |
 |---|---|---|
+| **Jump Shortcut** | ⌥⌘R (default) · ⌃⌘R · ⌥⌘J · Off | Global hotkey that focuses the highest-priority session (needs-permission › your-turn › most-recent) from anywhere — the whole notice→act loop in one keystroke. Uses Carbon's hotkey API, so no Accessibility prompt. |
 | **Alert Style** | Ripple + Sound (default) · Ripple Only | Turns the ding off without hiding anything — the tab still pulses and shows its state. |
 | **Pet Size** | Small · Medium (default) · Large | Resizes the whole floating panel live. |
 | **Re-nudge Interval** | 1 / 2 (default) / 5 / 10 min · Never | How often a stuck `needs_permission` session re-alerts. |

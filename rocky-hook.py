@@ -146,27 +146,61 @@ def tool_detail(tool_name, tool_input, max_len=500):
     return ""
 
 
-def transcript_summary(path, max_len=600):
-    """The last assistant text from the JSONL transcript — a short, human
-    'what this session is doing/saying' peek. Best-effort; empty on any trouble."""
+def read_transcript_tail(path, max_bytes=131072):
+    """Parse the tail of the JSONL transcript into a list of JSON objects
+    (oldest first). One read shared by every transcript-derived signal below;
+    best-effort, returns [] on any trouble. The first line may be a partial
+    record (we seek to an arbitrary byte) — it simply fails to parse and is
+    skipped."""
     if not path or not os.path.exists(path):
-        return ""
+        return []
     try:
         with open(path, "rb") as f:
             f.seek(0, os.SEEK_END)
             size = f.tell()
-            f.seek(max(0, size - 65536))          # last 64 KB is plenty
+            f.seek(max(0, size - max_bytes))
             tail = f.read().decode("utf-8", "ignore")
     except OSError:
-        return ""
-    for line in reversed(tail.splitlines()):
+        return []
+    objs = []
+    for line in tail.splitlines():
         line = line.strip()
         if not line.startswith("{"):
             continue
         try:
-            obj = json.loads(line)
+            objs.append(json.loads(line))
         except ValueError:
             continue
+    return objs
+
+
+def has_fresh_reply(objs):
+    """True once a text-bearing assistant message appears after the last real
+    user prompt — i.e. the turn's reply has actually landed in the transcript.
+    Used to beat the flush race at Stop: the hook can fire before Claude has
+    written the final assistant message, which would leave the story, outcome
+    and context estimate a full turn stale until the next event."""
+    last_prompt = -1
+    for i, o in enumerate(objs):
+        if _is_user_prompt(o):
+            last_prompt = i
+    for o in objs[last_prompt + 1:]:
+        if o.get("type") != "assistant":
+            continue
+        content = o.get("message", {}).get("content", [])
+        if isinstance(content, str) and content.strip():
+            return True
+        if isinstance(content, list) and any(
+                isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip()
+                for b in content):
+            return True
+    return False
+
+
+def transcript_summary(objs, max_len=600):
+    """The last assistant text — a short, human 'what this session is
+    saying' peek. Empty when there's nothing to show."""
+    for obj in reversed(objs):
         if obj.get("type") != "assistant":
             continue
         content = obj.get("message", {}).get("content", [])
@@ -180,6 +214,113 @@ def transcript_summary(path, max_len=600):
         if text:
             return text[:max_len]
     return ""
+
+
+def _is_user_prompt(obj):
+    """A real user turn (typed prompt), not a tool_result the harness injects
+    as a synthetic 'user' message."""
+    if obj.get("type") != "user":
+        return False
+    content = obj.get("message", {}).get("content", "")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        return any(isinstance(b, dict) and b.get("type") == "text" for b in content)
+    return False
+
+
+# Tools that mutate files — used to summarise what a finished turn did.
+EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
+
+def transcript_outcome(objs):
+    """A one-line summary of what the session actually did *this turn* — the
+    files it changed and commands it ran since the last user prompt — so a
+    finished tab shows an outcome, not just 'your turn'. Empty when the turn
+    touched nothing summarisable."""
+    # Bound to the current turn: everything after the last real user prompt.
+    start = 0
+    for i in range(len(objs) - 1, -1, -1):
+        if _is_user_prompt(objs[i]):
+            start = i
+            break
+    files = set()
+    commands = 0
+    for obj in objs[start:]:
+        if obj.get("type") != "assistant":
+            continue
+        content = obj.get("message", {}).get("content", [])
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if not isinstance(b, dict) or b.get("type") != "tool_use":
+                continue
+            name = b.get("name", "")
+            inp = b.get("input", {})
+            if not isinstance(inp, dict):
+                inp = {}
+            if name in EDIT_TOOLS:
+                p = inp.get("file_path") or inp.get("path") or inp.get("notebook_path")
+                if isinstance(p, str) and p:
+                    files.add(p)
+            elif name == "Bash":
+                commands += 1
+    parts = []
+    if files:
+        n = len(files)
+        parts.append(f"{n} file{'s' if n != 1 else ''} changed")
+    if commands:
+        parts.append(f"{commands} command{'s' if commands != 1 else ''}")
+    return " · ".join(parts)
+
+
+def user_context_limit():
+    """The context-window size, best-effort. The transcript never records the
+    1M-beta `[1m]` suffix (it's a runtime flag), so read it from where it *is*
+    persisted: an explicit override, else Claude's own selected-model setting.
+    Returns the token limit, or None when nothing says otherwise (→ 200K)."""
+    override = os.environ.get("ROCKY_CONTEXT_LIMIT")
+    if override and override.isdigit():
+        return int(override)
+    for rel in ("settings.json", "settings.local.json"):
+        try:
+            with open(os.path.expanduser("~/.claude/" + rel)) as f:
+                model = json.load(f).get("model") or ""
+        except (OSError, ValueError):
+            continue
+        if "[1m]" in model.lower():
+            return 1000000
+    return None
+
+
+def transcript_context(objs, big_limit=1000000, default_limit=200000):
+    """Estimate how full the context window is from the most recent assistant
+    turn's token usage. Returns (used_tokens, limit_tokens); (0, 0) when the
+    transcript carries no usage (so the meter hides rather than guessing)."""
+    for obj in reversed(objs):
+        if obj.get("type") != "assistant":
+            continue
+        msg = obj.get("message", {})
+        usage = msg.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        # input + both cache buckets are the disjoint parts of the prompt sent;
+        # add the response so the estimate reflects the window after this turn.
+        used = (usage.get("input_tokens", 0)
+                + usage.get("cache_read_input_tokens", 0)
+                + usage.get("cache_creation_input_tokens", 0)
+                + usage.get("output_tokens", 0))
+        if not isinstance(used, (int, float)) or used <= 0:
+            continue
+        # Window size: usage already past 200K *proves* a larger window;
+        # otherwise trust the user's configured 1M mode; else the 200K default.
+        # (Over-reporting headroom is the safe error — a false "about to
+        # compact" alarm is the one that costs trust.)
+        limit = default_limit
+        if used > default_limit or user_context_limit() == big_limit:
+            limit = big_limit
+        return int(used), limit
+    return 0, 0
 
 
 def main():
@@ -246,6 +387,7 @@ def main():
     tty = None
     prev_attended = 0
     prev_recent = []
+    prev_outcome = ""
     try:
         with open(session_path) as f:
             prev = json.load(f)
@@ -254,6 +396,7 @@ def main():
         warp_url = warp_url or prev.get("warp_url")
         prev_attended = prev.get("attended_at", 0)
         prev_recent = prev.get("recent", []) or []
+        prev_outcome = prev.get("outcome", "") or ""
     except (OSError, json.JSONDecodeError, ValueError):
         pass
 
@@ -281,13 +424,39 @@ def main():
     recent.append(now)
     recent = recent[-40:]
 
+    # Everything derived from the transcript shares one tail read. On Stop the
+    # final assistant message may not be flushed the instant the hook fires, so
+    # poll briefly until the reply lands — otherwise the story/outcome/context
+    # would show the *previous* turn until the next event corrected them. Async
+    # hook, so this waiting never delays Claude's turn.
+    transcript_path = data.get("transcript_path", "")
+    objs = read_transcript_tail(transcript_path)
+    if event == "Stop":
+        for _ in range(10):
+            if has_fresh_reply(objs):
+                break
+            time.sleep(0.15)
+            objs = read_transcript_tail(transcript_path)
+    used_tokens, token_limit = transcript_context(objs)
+    # The turn's outcome is meaningful only once it finishes (Stop); a fresh
+    # prompt clears it, and every other event carries the last one forward.
+    if event == "Stop":
+        outcome = transcript_outcome(objs)
+    elif event == "UserPromptSubmit":
+        outcome = ""
+    else:
+        outcome = prev_outcome
+
     state = {
         "session_id": session_id,
         "status": status,
         "event": event,
         "tool": tool_name,
         "detail": tool_detail(tool_name, tool_input) if tool_name else "",
-        "summary": transcript_summary(data.get("transcript_path", "")),
+        "summary": transcript_summary(objs),
+        "outcome": outcome,
+        "context_tokens": used_tokens,
+        "context_limit": token_limit,
         "recent": recent,
         "cwd": data.get("cwd", ""),
         "transcript": data.get("transcript_path", ""),

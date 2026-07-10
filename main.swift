@@ -8,6 +8,7 @@
 // Build: swiftc -O RockyCore.swift main.swift -o Rocky
 
 import AppKit
+import Carbon.HIToolbox
 import Foundation
 
 // MARK: - Layout constants
@@ -358,12 +359,44 @@ final class PetView: NSView {
         // (what it's asking); otherwise the tool/status line. On hover, if the
         // click can't land on the exact tab, say so instead of overpromising.
         let attention = s.status == "needs_permission" || s.isHot
-        var line2 = (attention ? (s.story ?? s.statusLine) : s.statusLine)
+        // A finished session shows *what it did* ("✓ 3 files changed · 2
+        // commands"), not just "your turn"; falls back to the story/status.
+        var line2: String
+        if s.status == "waiting_for_input", let o = s.outcome, !o.isEmpty {
+            line2 = "✓ \(o)"
+        } else if attention {
+            line2 = s.story ?? s.statusLine
+        } else {
+            line2 = s.statusLine
+        }
         if hover && !s.deepFocus { line2 = s.focusHint }
         NSAttributedString(string: line2, attributes: [
             .font: NSFont.systemFont(ofSize: 9),
             .foregroundColor: NSColor(white: 0.62, alpha: 1), .paragraphStyle: pn,
         ]).draw(in: NSRect(x: tx, y: rect.minY + 16, width: rightEdge - tx, height: 12))
+
+        // Context-window meter: a thin bar under the text whose colour
+        // escalates as the session's context fills — "is this about to
+        // compact?" answered at a glance. Hidden when we have no estimate.
+        if let frac = s.contextFraction {
+            drawContextMeter(frac, in: NSRect(x: tx, y: rect.minY + 27.5,
+                                              width: rightEdge - tx, height: 2))
+        }
+    }
+
+    /// Thin per-session context-window gauge: a filled bar whose colour climbs
+    /// calm → amber → red as the context nears the model's limit.
+    private func drawContextMeter(_ frac: Double, in rect: NSRect) {
+        NSColor(white: 1, alpha: 0.07).setFill()
+        NSBezierPath(rect: rect).fill()
+        let col: NSColor = frac >= 0.85
+            ? NSColor(calibratedRed: 0.97, green: 0.40, blue: 0.40, alpha: 1)    // wrap it up
+            : frac >= 0.60
+            ? NSColor(calibratedRed: 0.98, green: 0.80, blue: 0.35, alpha: 1)    // amber
+            : NSColor(calibratedRed: 0.40, green: 0.68, blue: 0.98, alpha: 0.85) // calm
+        col.setFill()
+        NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY,
+                                  width: rect.width * CGFloat(frac), height: rect.height)).fill()
     }
 
     /// Tiny bar sparkline of recent activity (newest on the right).
@@ -547,6 +580,20 @@ final class PetView: NSView {
         window?.orderFront(nil)
     }
 
+    // MARK: Jump-to-top-session (global hotkey + menu command)
+
+    /// Focus the terminal of the session that most wants attention right now
+    /// (needs-permission › your-turn › most-recently-active — the same
+    /// `primary` that drives the pet's mood). The whole "notice → act" loop in
+    /// one keystroke, no clicking. Silent no-op when there's nothing running.
+    func jumpToPrimary() {
+        guard let p = store.primary else { return }
+        store.markAttended(p.session_id)
+        Terminal.focus(p)
+        _ = store.refresh()
+        needsDisplay = true
+    }
+
     // MARK: Mouse
 
     override func mouseDown(with e: NSEvent) {
@@ -653,6 +700,27 @@ final class PetView: NSView {
         menu.addItem(login)
         menu.addItem(.separator())
 
+        // Jump to the top session — a clickable command plus the global-hotkey
+        // picker that fires the same action from anywhere.
+        let sc = JumpShortcut.current
+        let jump = NSMenuItem(title: sc.combo == nil ? "Jump to Top Session"
+                                                      : "Jump to Top Session  (\(sc.label))",
+                               action: #selector(jumpNow), keyEquivalent: "")
+        jump.target = self
+        jump.isEnabled = store.primary != nil
+        menu.addItem(jump)
+        let jumpSub = NSMenu()
+        for opt in JumpShortcut.all {
+            let item = NSMenuItem(title: opt == .off ? "Off" : "Hotkey: \(opt.label)",
+                                   action: #selector(setJumpShortcut(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = opt.rawValue
+            item.state = (sc == opt) ? .on : .off
+            jumpSub.addItem(item)
+        }
+        menu.addItem(submenu(jumpSub, title: "Jump Shortcut"))
+        menu.addItem(.separator())
+
         // Alert style — the "sound on/off" knob, framed as a single choice so
         // it can't disagree with itself.
         let alertSub = NSMenu()
@@ -724,6 +792,11 @@ final class PetView: NSView {
 
     @objc private func toggleExpanded() { expanded.toggle(); resizeWindow(animated: true); needsDisplay = true }
     @objc private func toggleLogin() { LoginItem.toggle() }
+    @objc private func jumpNow() { jumpToPrimary() }
+    @objc private func setJumpShortcut(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? Int, let sc = JumpShortcut(rawValue: raw) else { return }
+        JumpShortcut.current = sc
+    }
     @objc private func toggleSessionMute(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
         MutedSessions.toggle(id)
@@ -1000,6 +1073,80 @@ enum Escalation {
     ]
 }
 
+// MARK: - Jump-to-top-session global hotkey
+
+/// The system-wide shortcut that focuses the top session from anywhere (the
+/// `primary` computation already exists) — a picker with an Off switch, since
+/// a global key grab is exactly the kind of thing a user must be able to
+/// reclaim. Default ⌥⌘R. Persisted in UserDefaults like every other knob.
+enum JumpShortcut: Int {
+    case optCmdR = 0, ctrlCmdR = 1, optCmdJ = 2, off = 3
+
+    var label: String {
+        switch self {
+        case .optCmdR: return "⌥⌘R"
+        case .ctrlCmdR: return "⌃⌘R"
+        case .optCmdJ: return "⌥⌘J"
+        case .off: return "Off"
+        }
+    }
+
+    /// Carbon key code + modifier mask, or nil when disabled.
+    var combo: (keyCode: UInt32, modifiers: UInt32)? {
+        switch self {
+        case .optCmdR: return (UInt32(kVK_ANSI_R), UInt32(optionKey | cmdKey))
+        case .ctrlCmdR: return (UInt32(kVK_ANSI_R), UInt32(controlKey | cmdKey))
+        case .optCmdJ: return (UInt32(kVK_ANSI_J), UInt32(optionKey | cmdKey))
+        case .off: return nil
+        }
+    }
+
+    static let all: [JumpShortcut] = [.optCmdR, .ctrlCmdR, .optCmdJ, .off]
+
+    private static let key = "rocky.jumpShortcut"
+    static var current: JumpShortcut {
+        get { JumpShortcut(rawValue: UserDefaults.standard.integer(forKey: key)) ?? .optCmdR }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: key); HotKeyCenter.shared.apply() }
+    }
+}
+
+/// Registers the single global hotkey via Carbon's `RegisterEventHotKey` —
+/// which, unlike an `NSEvent` global monitor, needs no Accessibility
+/// permission prompt for a defined key combo. Re-applied whenever the
+/// preference changes; `action` is wired to the pet at launch.
+final class HotKeyCenter {
+    static let shared = HotKeyCenter()
+    var action: (() -> Void)?
+    private var ref: EventHotKeyRef?
+    private var installed = false
+
+    func apply() {
+        if let r = ref { UnregisterEventHotKey(r); ref = nil }
+        guard let combo = JumpShortcut.current.combo else { return }
+        installHandler()
+        let id = EventHotKeyID(signature: 0x524B_4859 /* "RKHY" */, id: 1)
+        var newRef: EventHotKeyRef?
+        let status = RegisterEventHotKey(combo.keyCode, combo.modifiers, id,
+                                         GetApplicationEventTarget(), 0, &newRef)
+        if status == noErr { ref = newRef } else {
+            NSLog("Rocky: could not register jump hotkey (status %d)", status)
+        }
+    }
+
+    private func installHandler() {
+        guard !installed else { return }
+        installed = true
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                                 eventKind: UInt32(kEventHotKeyPressed))
+        // Non-capturing closure → valid C function pointer; only one hotkey is
+        // ever registered here, so it routes straight to the action.
+        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
+            HotKeyCenter.shared.action?()
+            return noErr
+        }, 1, &spec, nil, nil)
+    }
+}
+
 // MARK: - Preferences (minimal layer — no config file, no settings window;
 // every knob lives in the right-click menu and persists in UserDefaults,
 // exactly like the window position already does)
@@ -1242,6 +1389,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         pet.startTimers()
+
+        // Global hotkey → jump to the top session from anywhere.
+        HotKeyCenter.shared.action = { [weak pet] in pet?.jumpToPrimary() }
+        HotKeyCenter.shared.apply()
+
         // startTimers ran the first poll synchronously, so registry health is
         // fresh; one startup line answers "is the plumbing connected?".
         NSLog("Rocky self-check: %@ · %@", SelfCheck.hooksLabel, pet.store.registryHealth.label)

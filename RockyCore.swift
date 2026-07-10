@@ -65,6 +65,9 @@ struct SessionState: Codable {
     var title: String?   // resolved from the transcript, not from disk
     var summary: String? // last assistant line from the transcript ("the story")
     var recent: [Double]?// recent event timestamps, for the activity sparkline
+    var outcome: String? // what the turn actually did (files/commands), set at Stop
+    var context_tokens: Int? // estimated tokens in the context window (transcript usage)
+    var context_limit: Int?  // the model's context-window size, for the fill fraction
 }
 
 enum Expr { case idle, working, happy, alert, sleeping, compacting }
@@ -124,6 +127,14 @@ extension SessionState {
     var story: String? {
         guard let s = summary, !s.isEmpty else { return nil }
         return s
+    }
+
+    /// Estimated context-window fill (0–1) from the last turn's token usage,
+    /// or nil when the transcript carries no usage yet (registry-only sessions,
+    /// or an older transcript) — the meter simply hides rather than guessing.
+    var contextFraction: Double? {
+        guard let t = context_tokens, let l = context_limit, l > 0, t > 0 else { return nil }
+        return min(1, Double(t) / Double(l))
     }
 
     /// The full pending question, untruncated — what a hover peek shows so the
@@ -199,6 +210,9 @@ extension SessionState {
         title = r.name
         summary = nil
         recent = nil
+        outcome = nil
+        context_tokens = nil
+        context_limit = nil
     }
 }
 
