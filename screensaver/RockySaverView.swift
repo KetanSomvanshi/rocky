@@ -15,6 +15,10 @@ import AppKit
 final class RockySaverView: ScreenSaverView {
     private let store = SessionStore()
     private var tick = 0
+    // The widget mirrors its skin choice to ~/.claude/rocky/skin (the saver's
+    // own UserDefaults live in the sandbox container); re-read on the same
+    // cadence as the session refresh.
+    private var skin = Skin.mirrored
 
     // All-clear celebration when the last busy/attention session goes calm.
     private var wasActive = false
@@ -44,6 +48,7 @@ final class RockySaverView: ScreenSaverView {
         tick += 1
         if tick % 4 == 0 {                       // ~0.33s, matching the app
             _ = store.refresh()
+            skin = Skin.mirrored
             let active = store.sessions.contains(where: isActive)
             if wasActive && !active { celebrateStart = tick }
             wasActive = active
@@ -369,7 +374,7 @@ final class RockySaverView: ScreenSaverView {
         let busy = sessions.contains { $0.status == "running_tool" || $0.status == "processing" }
 
         if busy { drawJet(at: NSPoint(x: c.x, y: c.y + catSize * 0.44), s: s) }   // jetpack flame
-        Cat.draw(in: catRect, tint: rockyTint, expr: expr, tick: tick)
+        Cat.draw(in: catRect, tint: rockyTint, expr: expr, tick: tick, skin: skin)
         drawChestPanel(at: NSPoint(x: c.x, y: c.y + catSize * 0.15), s: s, sessions: sessions)
         drawHelmet(center: c, radius: catSize * 0.6, s: s)
     }

@@ -42,6 +42,11 @@ focus.
   permission. No macOS toasts, nothing for routine tool calls, and never a ding
   for state it merely discovered on launch.
 - **Space screen saver** — step away and your Mac becomes mission control.
+- **Skins** — the pet doesn't have to be a cat: switch to **Rocky the Eridian**
+  (*Project Hail Mary*) — a stone carapace on five legs, no eyes, talks in
+  musical notes. Right-click → Skin. The pixel maps are plain text in
+  [`RockyCore.swift`](RockyCore.swift); drawing a new skin is a
+  [good first issue](docs/SKINS.md).
 - **Tiny preferences**, all in the right-click menu — no config file, no window.
 - **Local-only.** Reads two folders under `~/.claude`, sends nothing off your
   machine.
@@ -60,6 +65,18 @@ the sessions fan out. Drag it anywhere; it never steals keyboard focus.
   <img src="docs/collapsed.png" width="88" alt="collapsed pet with session-count badge">
   &nbsp;&nbsp;&nbsp;&nbsp;
   <img src="docs/expanded.png" width="300" alt="expanded: hero pet plus a tab per session">
+</p>
+
+### Skins
+
+The pet doesn't have to be a cat. Right-click → **Skin** to switch to **Rocky
+the Eridian** (*Project Hail Mary*) — rock carapace, five limbs, no eyes, and
+every mood still reads at a glance: hands raised to greet you, typing when a
+session works, bracing beside the padlock, folding up to sleep with a musical
+note instead of a "z". The screen saver follows the same choice.
+
+<p align="center">
+  <img src="docs/skin-eridian.png" width="720" alt="Skin strip: the classic pixel cat beside Rocky the Eridian shown idle, working on a tiny keyboard, celebrating with raised arms, braced next to a padlock, and asleep with a music note">
 </p>
 
 ### Away from the desk
@@ -135,6 +152,7 @@ config file.
 | **Jump Shortcut** | ⌥⌘R (default) · ⌃⌘R · ⌥⌘J · Off — global hotkey to focus the top session |
 | **Alert Style** | Ripple + Sound (default) · Ripple Only |
 | **Pet Size** | Small · Medium (default) · Large |
+| **Skin** | Classic Cat (default) · Rocky the Eridian — applies to the widget and the screen saver |
 | **Re-nudge Interval** | 1 / 2 (default) / 5 / 10 min · Never — how often a stuck session re-alerts |
 | **Quiet Hours** | Off (default) · nightly windows |
 | **Respect macOS Focus** | On (default) · Off — any Focus mode silences alerts (needs Full Disk Access; best-effort) |

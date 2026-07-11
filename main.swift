@@ -237,7 +237,7 @@ final class PetView: NSView {
                        y: (bounds.height - L.heroCat) / 2,
                        width: L.heroCat, height: L.heroCat)
         Cat.draw(in: c, tint: rockyTint, expr: celebrating ? .happy : primary.expr, tick: tick,
-                 wake: wake, scale: 1 + exprPop * 0.12)
+                 wake: wake, scale: 1 + exprPop * 0.12, skin: Skin.current)
         drawRipple(center: NSPoint(x: bounds.midX, y: bounds.midY), baseRadius: L.heroCat / 2)
         if celebrating { drawSparkles(center: NSPoint(x: c.midX, y: c.midY), radius: L.heroCat / 2) }
         drawBadge(center: NSPoint(x: bounds.width - 11, y: 11))
@@ -256,7 +256,7 @@ final class PetView: NSView {
         let c = NSRect(x: L.pad, y: (L.heroH - L.heroCat) / 2,
                        width: L.heroCat, height: L.heroCat)
         Cat.draw(in: c, tint: rockyTint, expr: celebrating ? .happy : primary.expr, tick: tick,
-                 wake: wake, scale: 1 + exprPop * 0.12)
+                 wake: wake, scale: 1 + exprPop * 0.12, skin: Skin.current)
         drawRipple(center: NSPoint(x: c.midX, y: c.midY), baseRadius: L.heroCat / 2)
         if celebrating { drawSparkles(center: NSPoint(x: c.midX, y: c.midY), radius: L.heroCat / 2) }
 
@@ -744,6 +744,17 @@ final class PetView: NSView {
         }
         menu.addItem(submenu(sizeSub, title: "Pet Size"))
 
+        // Skin — who the hero pet is.
+        let skinSub = NSMenu()
+        for skin in Skin.allCases {
+            let item = NSMenuItem(title: skin.label, action: #selector(setSkin(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = skin.rawValue
+            item.state = (Skin.current == skin) ? .on : .off
+            skinSub.addItem(item)
+        }
+        menu.addItem(submenu(skinSub, title: "Skin"))
+
         // Re-nudge interval.
         let escSub = NSMenu()
         for (label, secs) in Escalation.presets {
@@ -810,6 +821,11 @@ final class PetView: NSView {
         guard let raw = sender.representedObject as? Int, let size = PetSize(rawValue: raw) else { return }
         PetSize.current = size
         resizeWindow(animated: true)
+        needsDisplay = true
+    }
+    @objc private func setSkin(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? Int, let skin = Skin(rawValue: raw) else { return }
+        Skin.current = skin
         needsDisplay = true
     }
     @objc private func setEscalation(_ sender: NSMenuItem) {

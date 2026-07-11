@@ -433,6 +433,49 @@ final class SessionStore {
     }
 }
 
+// MARK: - Skins
+
+/// Which character the hero pet renders as. Every skin shares the same grid
+/// budget, mood motion and props (typing keyboard, padlock), so the panel and
+/// screen saver need no layout changes when the skin switches.
+enum Skin: Int, CaseIterable {
+    case classic = 0   // the original pixel cat
+    case eridian = 1   // Rocky the Eridian (Project Hail Mary)
+
+    var label: String {
+        switch self {
+        case .classic: return "Classic Cat"
+        case .eridian: return "Rocky the Eridian"
+        }
+    }
+
+    private static let key = "rocky.skin"
+    /// The saver's UserDefaults resolve to its own sandbox container, so the
+    /// widget mirrors the choice to a real-home path the sandbox can read —
+    /// the same trick as the session dirs.
+    private static let mirror = rockyHome + "/.claude/rocky/skin"
+
+    /// Widget-side accessor: UserDefaults like every other knob, mirrored to
+    /// `~/.claude/rocky/skin` for the screen saver.
+    static var current: Skin {
+        get { Skin(rawValue: UserDefaults.standard.integer(forKey: key)) ?? .classic }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: key)
+            try? FileManager.default.createDirectory(
+                atPath: (mirror as NSString).deletingLastPathComponent,
+                withIntermediateDirectories: true)
+            try? String(newValue.rawValue).write(toFile: mirror, atomically: true, encoding: .utf8)
+        }
+    }
+
+    /// Saver-side accessor: reads the mirror file, never the saver's defaults.
+    static var mirrored: Skin {
+        guard let s = try? String(contentsOfFile: mirror, encoding: .utf8),
+              let raw = Int(s.trimmingCharacters(in: .whitespacesAndNewlines)) else { return .classic }
+        return Skin(rawValue: raw) ?? .classic
+    }
+}
+
 // MARK: - Pixel cat sprite
 
 enum Cat {
@@ -453,7 +496,16 @@ enum Cat {
         "..oppo.oppo..",
     ]
 
-    static func draw(in rect: NSRect, tint: NSColor, expr: Expr, tick: Int, wake: Double = 0, scale: Double = 1) {
+    static func draw(in rect: NSRect, tint: NSColor, expr: Expr, tick: Int, wake: Double = 0,
+                     scale: Double = 1, skin: Skin = .classic) {
+        switch skin {
+        case .classic: drawClassic(in: rect, tint: tint, expr: expr, tick: tick, wake: wake, scale: scale)
+        case .eridian: drawEridian(in: rect, tint: tint, expr: expr, tick: tick, wake: wake, scale: scale)
+        }
+    }
+
+    private static func drawClassic(in rect: NSRect, tint: NSColor, expr: Expr, tick: Int,
+                                    wake: Double, scale: Double) {
         let gw = map.map { $0.count }.max() ?? 13
         let gh = map.count
         // `scale` briefly bumps the sprite (a pop on mood change); it recentres
@@ -581,7 +633,14 @@ enum Cat {
             z.draw(at: NSPoint(x: ox + cell * 12, y: oy - cell * 2 - phase * cell))
         }
 
-        // Mood props — a small accessory that reinforces the current state.
+        drawMoodProps(expr: expr, tick: tick, cell: cell, ox: ox, oy: oy, tint: tint)
+    }
+
+    /// Mood props shared by every skin — a small accessory that reinforces the
+    /// current state: a typing keyboard while working, a padlock while a
+    /// permission is needed.
+    private static func drawMoodProps(expr: Expr, tick: Int, cell: CGFloat,
+                                      ox: CGFloat, oy: CGFloat, tint: NSColor) {
         switch expr {
         case .working:
             // Mini keyboard below the paws; one key lights in sequence = typing.
@@ -628,6 +687,179 @@ enum Cat {
             }
         default: break
         }
+    }
+
+    // MARK: Rocky the Eridian (Project Hail Mary)
+
+    // '.' transparent · 'o' outline · 'r' rock carapace · 'd' crack · 'h' highlight
+    // An upright egg-shaped torso, no head — the pore cluster (his sound
+    // ports) and the five chunky limbs are drawn procedurally around it.
+    static let eridianMap = [
+        ".....ooo.....",
+        "....ohrro....",
+        "...ohhrrro...",
+        "...ohrrdro...",
+        "...odrrrro...",
+        "...orrrdro...",
+        "...ordrrro...",
+        "....orrro....",
+        ".....ooo.....",
+    ]
+
+    /// The other Rocky: a stone carapace dome on five radial legs, no eyes
+    /// (Eridians perceive by sound), speaking in musical chords. Shares the
+    /// cat's grid budget, mood motion and props, so it drops into both the
+    /// panel and the screen saver unchanged.
+    private static func drawEridian(in rect: NSRect, tint: NSColor, expr: Expr, tick: Int,
+                                    wake: Double, scale: Double) {
+        let gw = 13, gh = 13   // same grid budget as the cat so the skins size alike
+        let cell = min(rect.width, rect.height) / CGFloat(max(gw, gh) + 1) * CGFloat(scale)
+
+        // Whole-body motion by mood — the cat's vocabulary, so mood still
+        // reads instantly across skins.
+        var xOff: CGFloat = 0, yOff: CGFloat = 0
+        switch expr {
+        case .happy:   yOff = -abs(sin(Double(tick) * 0.35)) * 2.5
+        case .alert:   xOff = (tick % 2 == 0) ? -1.5 : 1.5
+        case .working: yOff = sin(Double(tick) * 0.5) * 1.0
+        case .sleeping: yOff = sin(Double(tick) * 0.06) * 0.6
+        default: break
+        }
+        if wake > 0 { yOff -= CGFloat(wake) * 3.2 }
+        if expr == .sleeping { yOff += cell * 1.6 }   // settles down onto folded legs
+
+        let ox = rect.minX + (rect.width - cell * CGFloat(gw)) / 2 + xOff
+        let oy = rect.minY + (rect.height - cell * CGFloat(gh)) / 2 + yOff
+
+        let outline = NSColor(white: 0.12, alpha: 1)
+        let rock = NSColor(calibratedRed: 0.58, green: 0.51, blue: 0.43, alpha: 1)
+        let crack = NSColor(calibratedRed: 0.38, green: 0.32, blue: 0.27, alpha: 1)
+        let glintC = NSColor(calibratedRed: 0.72, green: 0.66, blue: 0.58, alpha: 1)
+
+        func fill(_ cx: Double, _ cy: Double, _ col: NSColor, _ w: Double = 1, _ h: Double = 1) {
+            let r = NSRect(x: ox + CGFloat(cx) * cell, y: oy + CGFloat(cy) * cell,
+                           width: cell * CGFloat(w) + 0.6, height: cell * CGFloat(h) + 0.6)
+            col.setFill()
+            NSBezierPath(rect: r).fill()
+        }
+
+        // Limbs are solid runs of cells along hip→knee→foot polylines.
+        func seg(_ a: (Double, Double), _ b: (Double, Double), _ w: Double) {
+            // Enough cells that the run reads as a solid limb, not beads.
+            let n = max(3, Int(((abs(b.0 - a.0) + abs(b.1 - a.1)) * 1.6).rounded()))
+            for k in 0...n {
+                let f = Double(k) / Double(n)
+                fill(a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f, crack, w, w)
+            }
+        }
+        // Pale mineral-teal joint patches — the accent that sells "alien rock"
+        // rather than "grey spider".
+        let teal = NSColor(calibratedRed: 0.55, green: 0.80, blue: 0.72, alpha: 1)
+        var joints: [(Double, Double)] = []
+        // Three fingers, splayed up for a raised hand and down for a planted one.
+        func hand(_ hx: Double, _ hy: Double, up: Bool) {
+            let dir: Double = up ? -1 : 1
+            fill(hx - 0.35, hy, rock, 1.5, 0.7)
+            fill(hx - 0.6, hy + 0.65 * dir, rock, 0.5, 0.5)
+            fill(hx + 0.15, hy + 0.8 * dir, rock, 0.5, 0.5)
+            fill(hx + 0.9, hy + 0.65 * dir, rock, 0.5, 0.5)
+        }
+
+        // Three planted legs, behind the torso: scuttle while working, brace
+        // wide on alert, fold under the settled body asleep.
+        let legs: [((Double, Double), (Double, Double), (Double, Double))] = [
+            ((4.6, 7.8), (2.7, 9.2), (2.1, 12.0)),
+            ((6.0, 8.6), (6.4, 10.2), (6.2, 12.0)),
+            ((7.4, 7.8), (9.3, 9.2), (9.9, 12.0)),
+        ]
+        let braced = expr == .alert ? 1.2 : 1.0
+        let folded = expr == .sleeping
+        let step = Double(tick) * 0.5
+        for (i, leg) in legs.enumerated() {
+            let (hip, knee0, foot0) = leg
+            let lift = expr == .working ? min(0, sin(step + Double(i) * 2.2)) * 1.2 : 0
+            var kx = 6 + (knee0.0 - 6) * braced, ky = knee0.1 + lift * 0.5
+            var fx = 6 + (foot0.0 - 6) * braced, fy = foot0.1 + lift
+            if folded {
+                kx = 6 + (knee0.0 - 6) * 0.65; ky = max(knee0.1, 9.2)
+                fx = 6 + (foot0.0 - 6) * 0.5; fy = 10.9
+            }
+            seg(hip, (kx, ky), 1.15)          // chunky rocky femur
+            seg((kx, ky), (fx, fy), 0.95)
+            hand(fx, fy + 0.1, up: false)
+            joints.append((kx, ky))
+        }
+
+        // The torso over the leg roots.
+        for (ry, row) in eridianMap.enumerated() {
+            for (cx, ch) in row.enumerated() {
+                switch ch {
+                case "o": fill(Double(cx), Double(ry), outline)
+                case "r": fill(Double(cx), Double(ry), rock)
+                case "d": fill(Double(cx), Double(ry), crack)
+                case "h": fill(Double(cx), Double(ry), glintC)
+                default: break
+                }
+            }
+        }
+        // The pore cluster on the chest — his sound ports.
+        let pore = NSColor(calibratedRed: 0.24, green: 0.19, blue: 0.16, alpha: 1)
+        for (px, py) in [(5.3, 3.3), (6.3, 3.2), (7.3, 3.3), (5.8, 4.1), (6.8, 4.1)] {
+            pore.setFill()
+            NSBezierPath(ovalIn: NSRect(x: ox + CGFloat(px) * cell, y: oy + CGFloat(py) * cell,
+                                        width: cell * 0.42, height: cell * 0.42)).fill()
+        }
+
+        // Two arms, in front of the torso. His signature pose is both hands
+        // raised — kept for idle/alert, pumped higher when happy, brought
+        // down to type while working, folded along the body asleep.
+        let shoulders: [(Double, Double)] = [(3.6, 2.4), (8.4, 2.4)]
+        for (i, sh) in shoulders.enumerated() {
+            let m: Double = i == 0 ? 1 : -1     // mirror left arm for the right
+            var elbow = (6 - 4.4 * m, 3.4)   // (1.6, 3.4) / (10.4, 3.4)
+            var handP = (6 - 5.2 * m, 1.0)   // (0.8, 1.0) / (11.2, 1.0)
+            var up = true
+            switch expr {
+            case .happy:
+                let pump = abs(sin(Double(tick) * 0.35)) * 1.2
+                handP.1 = 0.4 - pump
+            case .alert:
+                elbow = (6 - 4.8 * m, 3.2); handP = (6 - 5.6 * m, 0.4)
+            case .working:
+                let tap = min(0, sin(step + Double(i) * .pi)) * 1.0
+                elbow = (6 - 3.8 * m, 8.2); handP = (6 - 2.6 * m, 11.2 + tap); up = false
+            case .sleeping:
+                elbow = (6 - 3.8 * m, 6.0); handP = (6 - 3.4 * m, 8.8); up = false
+            default: break
+            }
+            seg(sh, elbow, 1.1)
+            seg(elbow, handP, 0.95)
+            hand(handP.0, handP.1, up: up)
+            joints.append(elbow)
+        }
+        for (jx, jy) in joints { fill(jx + 0.15, jy + 0.15, teal, 0.7, 0.7) }
+
+        // Rocky talks in music. Asleep, a slow low note drifts up (his "z");
+        // happy, a bright little chord — "Amaze!" No eyes to emote with, so
+        // the notes carry the feeling.
+        func note(_ str: String, _ x: CGFloat, _ y: CGFloat, _ size: CGFloat, _ color: NSColor) {
+            NSAttributedString(string: str, attributes: [
+                .font: NSFont.boldSystemFont(ofSize: size),
+                .foregroundColor: color,
+            ]).draw(at: NSPoint(x: x, y: y))
+        }
+        if expr == .sleeping {
+            let phase = CGFloat((tick / 6) % 3)
+            note("♪", ox + cell * 11.5, oy - cell * 2 - phase * cell, cell * 2,
+                 NSColor(white: 0.85, alpha: 0.8))
+        }
+        if expr == .happy {
+            let bob = CGFloat(sin(Double(tick) * 0.35)) * cell * 0.6
+            note("♪", ox + cell * 0.2, oy - cell * 1.6 + bob, cell * 1.8, tint.withAlphaComponent(0.95))
+            note("♫", ox + cell * 10.8, oy - cell * 2.2 - bob, cell * 2.2, tint.withAlphaComponent(0.95))
+        }
+
+        drawMoodProps(expr: expr, tick: tick, cell: cell, ox: ox, oy: oy, tint: tint)
     }
 
     /// Deterministic pastel fur colour from the project path.

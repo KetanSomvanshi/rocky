@@ -25,7 +25,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST_EOF
   <key>CFBundleIdentifier</key><string>$LABEL</string>
   <key>CFBundleName</key><string>Rocky</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.5.0</string>
+  <key>CFBundleShortVersionString</key><string>1.6.0</string>
   <key>LSUIElement</key><true/>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
 </dict></plist>
