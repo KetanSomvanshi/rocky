@@ -110,6 +110,11 @@ Homebrew compiles the single Swift file locally, so there's no Gatekeeper
 prompt. `rocky-setup` merges Rocky's hooks into `~/.claude/settings.json`
 (your existing hooks are left untouched); `rocky-teardown` removes them.
 
+Homebrew runs Rocky as a keep-alive service, so quitting from the menu stops
+it until you start it again. Run `rocky-launcher` once to install **Start
+Rocky** in `/Applications` — search for it in Spotlight any time you want
+Rocky back.
+
 ### From source
 
 ```bash
@@ -193,6 +198,7 @@ are wired and the registry is readable, so the cat never silently vanishes.
 
 ```bash
 rocky-teardown && brew services stop rocky && brew uninstall rocky   # Homebrew
+rm -rf "/Applications/Start Rocky.app"                                # if you ran rocky-launcher
 ./uninstall.sh                                                        # from source
 ```
 

@@ -791,7 +791,7 @@ final class PetView: NSView {
             menu.addItem(NSMenuItem(title: FocusSync.state().menuLabel, action: nil, keyEquivalent: ""))
         }
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Rocky", action: #selector(NSApp.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(withTitle: "Quit Rocky", action: #selector(quitRocky), keyEquivalent: "q")
         NSMenu.popUpContextMenu(menu, with: e, for: self)
     }
 
@@ -803,6 +803,20 @@ final class PetView: NSView {
 
     @objc private func toggleExpanded() { expanded.toggle(); resizeWindow(animated: true); needsDisplay = true }
     @objc private func toggleLogin() { LoginItem.toggle() }
+    /// Quitting the process alone isn't enough: `brew services` runs Rocky
+    /// under a launchd KeepAlive agent that respawns it instantly. Stop the
+    /// service first so it actually stays down.
+    @objc private func quitRocky() {
+        if let brew = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+            .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+            let p = Process()
+            p.launchPath = brew
+            p.arguments = ["services", "stop", "rocky"]
+            try? p.run()
+            p.waitUntilExit()
+        }
+        NSApp.terminate(nil)
+    }
     @objc private func jumpNow() { jumpToPrimary() }
     @objc private func setJumpShortcut(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? Int, let sc = JumpShortcut(rawValue: raw) else { return }
