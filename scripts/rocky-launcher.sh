@@ -39,7 +39,21 @@ if xcrun swiftc -O "$LIBEXEC/RockyCore.swift" "$WORK/main.swift" -o "$WORK/rende
   done
   iconutil -c icns "$ICONSET" -o "$WORK/StartRocky.icns"
   cp "$WORK/StartRocky.icns" "$APP/Contents/Resources/applet.icns"
+
+  # osacompile bundles ship an Assets.car asset catalog, and when
+  # CFBundleIconName is set macOS prefers that catalog over the loose .icns
+  # — so without removing it, the icon swap above is silently ignored.
+  # Editing the bundle also invalidates its signature, so re-sign ad-hoc.
+  plutil -remove CFBundleIconName "$APP/Contents/Info.plist" 2>/dev/null || true
+  rm -f "$APP/Contents/Resources/Assets.car"
+  codesign --remove-signature "$APP" 2>/dev/null || true
+  codesign -s - --force --deep "$APP" 2>/dev/null || true
+
+  /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$APP"
   touch "$APP"
+  killall iconservicesagent 2>/dev/null || true
+  killall Dock 2>/dev/null || true
+  killall Finder 2>/dev/null || true
 else
   echo "  (icon render failed — Start Rocky.app still works, just with the default script icon)"
 fi
